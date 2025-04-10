@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Card Reward Advisor</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: auto; }
+    h1 { text-align: center; }
+    select, input, button { width: 100%; padding: 10px; margin: 10px 0; }
+    .result { margin-top: 20px; }
+    .card-result { background: #f2f2f2; padding: 10px; margin: 5px 0; border-radius: 5px; }
+    .history-entry { font-size: 14px; border-top: 1px solid #ccc; padding-top: 10px; margin-top: 10px; }
+    .card-list { font-size: 14px; margin-top: 10px; }
+    .card-list span { display: inline-block; background: #d9edf7; padding: 5px 10px; border-radius: 3px; margin: 2px; }
+    .card-list span button { margin-left: 5px; }
+  </style>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <h1>Card Reward Advisor</h1>
+  <label for="username">Username:</label>
+  <input type="text" id="username" placeholder="Enter username">
+  <button id="loginBtn">Login</button>
+  <div id="gmailConnect" style="margin-top: 20px;"></div>
+  <div id="userSection" style="display:none">
+    <label for="cards">Add Card (comma-separated):</label>
+    <input type="text" id="cards" placeholder="e.g., SBI Elite, HSBC Live">
+    <button id="addCardsBtn">Add Cards</button>
+    <div class="card-list" id="userCards"></div>
+    <label for="amount">Amount (INR):</label>
+    <input type="number" id="amount" placeholder="Enter spend amount">
+    <label for="category">Category:</label>
+    <select id="category">
+      <option value="Dining">Dining</option>
+      <option value="Groceries">Groceries</option>
+      <option value="Travel">Travel</option>
+      <option value="Hotel Booking">Hotel Booking</option>
+      <option value="Retail Shopping">Retail Shopping</option>
+      <option value="General">General</option>
+    </select>
+    <button id="calcBtn">Calculate</button>
+    <div class="result" id="results"></div>
+    <div class="result" id="history"></div>
+  </div>
+  <script>
+    const userData = JSON.parse(localStorage.getItem('userData')) || {};
+    let currentUser = null;
+
+    document.getElementById("loginBtn").addEventListener("click", () => {
+      const username = document.getElementById("username").value.trim();
+      if (!username) return alert("Please enter a username.");
+      currentUser = username;
+      if (!userData[currentUser]) {
+        userData[currentUser] = { history: [], cards: [] };
+      }
+      document.getElementById("userSection").style.display = "block";
+      updateCardDisplay();
+      saveData();
+    });
+
+    document.getElementById("addCardsBtn").addEventListener("click", () => {
+      const cardInput = document.getElementById("cards").value.trim();
+      if (cardInput) {
+        const newCards = cardInput.split(',').map(card => card.trim());
+        userData[currentUser].cards.push(...newCards);
+        userData[currentUser].cards = [...new Set(userData[currentUser].cards)];
+        updateCardDisplay();
+        document.getElementById("cards").value = "";
+        saveData();
+      }
+    });
+
+    function removeCard(card) {
+      userData[currentUser].cards = userData[currentUser].cards.filter(c => c !== card);
+      updateCardDisplay();
+      saveData();
+    }
+
+    function updateCardDisplay() {
+      const cardListDiv = document.getElementById("userCards");
+      const cards = userData[currentUser].cards;
+      if (!cards.length) {
+        cardListDiv.innerHTML = "<p>No cards added.</p>";
+        return;
+      }
+      cardListDiv.innerHTML = cards.map(card => `<span>${card} <button onclick="removeCard('${card}')">x</button></span>`).join('');
+    }
+
+    async function fetchCardRewards(cardName) {
+      const logic = {
+        "SBI Elite": (category, isWeekend, amount) => (category === "Dining" || category === "Groceries") ? amount * 0.0125 : amount * 0.005,
+        "Axis Select": (category, isWeekend, amount) => (category === "Retail Shopping" && amount <= 20000) ? amount * 0.0025 : amount * 0.00125,
+        "IndusInd Legend": (category, isWeekend, amount) => amount * (isWeekend ? 0.015 : 0.0075),
+        "HSBC Live": (category, isWeekend, amount) => (category === "Dining" || category === "Groceries") ? Math.min(amount * 0.10, 1000) : amount * 0.015
+      };
+      return logic[cardName] || ((category, isWeekend, amount) => amount * 0.005);
+    }
+
+    async function calculateRewards() {
+      const amountInput = document.getElementById("amount").value;
+      const amount = parseFloat(amountInput);
+      const category = document.getElementById("category").value;
+      const date = new Date();
+      const day = date.getDay();
+      const isWeekend = (day === 0 || day === 6);
+
+      if (isNaN(amount) || amount <= 0) {
+        document.getElementById("results").innerHTML = "<p>Please enter a valid amount.</p>";
+        return;
+      }
+
+      const results = {};
+      const cards = userData[currentUser].cards;
+      for (const card of cards) {
+        const logic = await fetchCardRewards(card);
+        const reward = logic(category, isWeekend, amount);
+        results[card] = reward;
+      }
+
+      const sorted = Object.entries(results).sort((a, b) => b[1] - a[1]);
+      const resultDiv = document.getElementById("results");
+      let resultHTML = "<h3>Best Card Recommendation</h3>";
+      for (let i = 0; i < sorted.length; i++) {
+        resultHTML += `<div class="card-result"><strong>${sorted[i][0]}</strong>: ₹${sorted[i][1].toFixed(2)}</div>`;
+      }
+      resultDiv.innerHTML = resultHTML;
+
+      const timestamp = new Date().toLocaleString();
+      userData[currentUser].history.unshift({ amount, day: isWeekend ? "Weekend" : "Weekday", category, result: sorted[0][0], reward: sorted[0][1].toFixed(2), time: timestamp });
+      updateHistory();
+      saveData();
+    }
+
+    function updateHistory() {
+      const historyDiv = document.getElementById("history");
+      const historyData = userData[currentUser].history;
+      if (historyData.length === 0) return;
+      let html = "<h3>Spend History</h3>";
+      historyData.slice(0, 5).forEach(entry => {
+        html += `<div class='history-entry'>
+          ₹${entry.amount} on ${entry.category} (${entry.day})<br>
+          Recommended: ${entry.result} (₹${entry.reward})<br>
+          <small>${entry.time}</small>
+        </div>`;
+      });
+      historyDiv.innerHTML = html;
+    }
+
+    function saveData() {
+      localStorage.setItem('userData', JSON.stringify(userData));
+    }
+
+    google.accounts.id.initialize({
+      client_id: "YOUR_CLIENT_ID_HERE",
+      callback: (response) => {
+        const mockCards = ["HDFC Regalia", "ICICI Coral", "Axis Ace"];
+        const userEmail = JSON.parse(atob(response.credential.split('.')[1])).email;
+        currentUser = userEmail;
+        if (!userData[currentUser]) userData[currentUser] = { history: [], cards: [] };
+        userData[currentUser].cards.push(...mockCards);
+        userData[currentUser].cards = [...new Set(userData[currentUser].cards)];
+        document.getElementById("userSection").style.display = "block";
+        updateCardDisplay();
+        saveData();
+        alert("Mock cards fetched from Gmail and added to your account!");
+      }
+    });
+
+    google.accounts.id.renderButton(
+      document.getElementById("gmailConnect"),
+      { theme: "outline", size: "large" }
+    );
+
+    document.getElementById("calcBtn").addEventListener("click", calculateRewards);
+  </script>
+</body>
+</html>
