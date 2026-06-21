@@ -157,8 +157,8 @@ class CoinDCXClient:
                 "side": side,
                 "order_type": "limit_order",
                 "market": market,
-                "price_per_unit": str(price),
-                "total_quantity": str(quantity),
+                "price_per_unit": price,
+                "total_quantity": quantity,
             },
         )
 
@@ -171,7 +171,7 @@ class CoinDCXClient:
                 "side": side,
                 "order_type": "market_order",
                 "market": market,
-                "total_quantity": str(quantity),
+                "total_quantity": quantity,
             },
         )
 
