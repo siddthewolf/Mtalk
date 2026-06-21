@@ -22,6 +22,24 @@ class CoinDCXClient:
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
+        # Cache: coindcx_name (e.g. "BTCUSDT") → correct pair (e.g. "B-BTC_USDT")
+        self._pair_map: Dict[str, str] = {}
+
+    def _build_pair_map(self):
+        """Build coindcx_name → pair mapping from market details (cached)."""
+        if self._pair_map:
+            return
+        details = self.get_market_details()
+        for m in details:
+            name = m.get("coindcx_name", "")
+            pair = m.get("pair", "")
+            if name and pair:
+                self._pair_map[name.upper()] = pair
+
+    def market_to_pair(self, coindcx_name: str) -> str:
+        """Convert e.g. 'BTCUSDT' → 'B-BTC_USDT' or 'TAOUSDT' → 'KC-TAO_USDT'."""
+        self._build_pair_map()
+        return self._pair_map.get(coindcx_name.upper(), f"B-{coindcx_name.replace('USDT','')}_USDT")
 
     # ── private auth helpers ──────────────────────────────────────────────────
 
@@ -38,9 +56,20 @@ class CoinDCXClient:
         body = {"timestamp": int(time.time() * 1000)}
         if extra:
             body.update(extra)
-        headers = self._sign(body)
+        # Signature must be computed on the exact bytes sent — no spaces
+        body_json = json.dumps(body, separators=(",", ":"))
+        sig = hmac.new(
+            self.api_secret.encode("utf-8"),
+            body_json.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        headers = {
+            "Content-Type": "application/json",
+            "X-AUTH-APIKEY": self.api_key,
+            "X-AUTH-SIGNATURE": sig,
+        }
         resp = self.session.post(
-            f"{self.BASE_URL}{path}", json=body, headers=headers, timeout=self.timeout
+            f"{self.BASE_URL}{path}", data=body_json, headers=headers, timeout=self.timeout
         )
         resp.raise_for_status()
         return resp.json()

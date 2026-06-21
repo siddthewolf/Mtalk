@@ -84,10 +84,8 @@ class CoinDCXAgent:
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _ticker_to_pair(self, market: str) -> str:
-        """Convert 'BTCUSDT' → 'B-BTC_USDT' for candle API."""
-        quote = self.cfg.quote_currency
-        base = market.replace(quote, "")
-        return f"B-{base}_{quote}"
+        """Convert 'BTCUSDT' → correct pair like 'B-BTC_USDT' or 'KC-TAO_USDT'."""
+        return self.client.market_to_pair(market)
 
     def _fetch_and_analyze(
         self, market: str
