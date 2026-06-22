@@ -71,7 +71,10 @@ class CoinDCXClient:
         resp = self.session.post(
             f"{self.BASE_URL}{path}", data=body_json, headers=headers, timeout=self.timeout
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            raise requests.HTTPError(
+                f"{resp.status_code} {resp.reason}: {resp.text}", response=resp
+            )
         return resp.json()
 
     # ── public endpoints ──────────────────────────────────────────────────────
