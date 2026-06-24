@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Environment / secrets — never commit API keys
+.env
+
+# Portfolio data (personal)
+portfolio.json
+
+# OS
+.DS_Store
+Thumbs.db
