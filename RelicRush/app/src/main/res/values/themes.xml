@@ -1,0 +1,13 @@
+<resources>
+    <!-- Base application theme: no action bar, dark window background. -->
+    <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+    </style>
+
+    <!-- Fullscreen, edge-to-edge theme for the game activity. -->
+    <style name="AppTheme.Fullscreen" parent="AppTheme">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>
