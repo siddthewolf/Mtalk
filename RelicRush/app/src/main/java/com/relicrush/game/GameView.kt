@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.view.GestureDetector
@@ -13,6 +14,7 @@ import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.sin
 import kotlin.random.Random
@@ -28,13 +30,27 @@ import kotlin.random.Random
  */
 class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
 
+    /** A short-lived screen-space spark, used for relic-pickup bursts. */
+    private class Particle(
+        var x: Float, var y: Float,
+        var vx: Float, var vy: Float,
+        var life: Float, val maxLife: Float,
+        val color: Int, val size: Float
+    )
+
     // ---- Tunable world constants ---------------------------------------------------------
     private val zFar = 1.25f                 // spawn depth
     private val zCull = -0.18f               // remove once behind the camera
-    private val spawnGapZ = 0.42f            // depth between obstacle rows
-    private val startSpeed = 0.62f           // z units per second
-    private val maxSpeed = 1.7f
-    private val accel = 0.014f               // speed gained per second
+    private val spawnGapZ = 0.44f            // depth between obstacle rows
+
+    // Speed: starts slow and ramps up gently for gradual progression
+    // (~0.40 -> 1.55 over roughly two and a half minutes).
+    private val startSpeed = 0.40f           // z units per second
+    private val maxSpeed = 1.55f
+    private val accel = 0.0075f              // speed gained per second
+    private val graceTime = 2.2f             // no obstacles for the first moments
+    private val tutorialTime = 10f           // in-game guide duration
+
     private val coinValue = 10
     private val prefs = context.getSharedPreferences("relicrush", Context.MODE_PRIVATE)
 
@@ -44,6 +60,7 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     private val obstacles = ArrayList<Obstacle>()
     private val coins = ArrayList<Coin>()
     private val pillars = ArrayList<Pillar>()
+    private val particles = ArrayList<Particle>()
     private val rng = Random(System.nanoTime())
 
     private var speed = startSpeed
@@ -51,6 +68,9 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     private var pillarTimer = 0f
     private var roadScroll = 0f
     private var runCycle = 0f
+    private var uiTime = 0f          // always-advancing clock for UI pulsing
+    private var gameTime = 0f        // seconds since the current run started
+    private var crashFlash = 0f
     private var score = 0
     private var coinCount = 0
     private var highScore = prefs.getInt("highScore", 0)
@@ -59,6 +79,10 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
 
     // ---- Paints --------------------------------------------------------------------------
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.argb(90, 0, 0, 0)
+    }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.LEFT
@@ -68,6 +92,8 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         textAlign = Paint.Align.CENTER
     }
     private var skyShader: Shader? = null
+    private var groundShader: Shader? = null
+    private var vignetteShader: Shader? = null
 
     private var thread: GameThread? = null
     private val gestureDetector: GestureDetector
@@ -87,11 +113,27 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         screenW = width.toFloat()
         screenH = height.toFloat()
         skyShader = LinearGradient(
-            0f, 0f, 0f, screenH * 0.45f,
-            Color.rgb(38, 88, 120), Color.rgb(214, 156, 92),
+            0f, 0f, 0f, horizonY(),
+            intArrayOf(
+                Color.rgb(26, 42, 78),    // deep sky
+                Color.rgb(72, 96, 134),
+                Color.rgb(232, 170, 104)  // warm haze at horizon
+            ),
+            floatArrayOf(0f, 0.6f, 1f),
             Shader.TileMode.CLAMP
         )
-        textPaint.textSize = screenH * 0.032f
+        groundShader = LinearGradient(
+            0f, horizonY(), 0f, screenH,
+            Color.rgb(46, 92, 56), Color.rgb(28, 60, 38),
+            Shader.TileMode.CLAMP
+        )
+        vignetteShader = RadialGradient(
+            screenW / 2f, screenH * 0.55f, max(screenW, screenH) * 0.75f,
+            intArrayOf(Color.TRANSPARENT, Color.argb(110, 0, 0, 0)),
+            floatArrayOf(0.62f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        textPaint.textSize = screenH * 0.030f
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -124,7 +166,7 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     }
 
     // ---- Projection ----------------------------------------------------------------------
-    private val horizonFrac = 0.34f
+    private val horizonFrac = 0.36f
     private fun horizonY() = screenH * horizonFrac
     private fun groundBottomY() = screenH * 1.04f
     private fun laneSpacing() = screenW * 0.27f
@@ -146,28 +188,31 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
 
     // ---- Simulation ----------------------------------------------------------------------
     fun update(dt: Float) {
+        uiTime += dt
         roadScroll = (roadScroll + speed * dt) % 1f
-        runCycle += dt * 12f
+        runCycle += dt * (8f + speed * 6f)
+        if (crashFlash > 0f) crashFlash = max(0f, crashFlash - dt * 1.6f)
+        updateParticles(dt)
 
         if (state != GameState.PLAYING) return
 
-        speed = max(speed, startSpeed) + accel * dt
-        if (speed > maxSpeed) speed = maxSpeed
+        gameTime += dt
+        speed = (speed + accel * dt).coerceIn(startSpeed, maxSpeed)
 
         player.update(dt)
 
-        // Spawn obstacle rows based on distance travelled.
+        // Spawn obstacle rows based on distance travelled (after a short grace).
         distanceToNextSpawn -= speed * dt
         if (distanceToNextSpawn <= 0f) {
-            spawnRow()
+            if (gameTime > graceTime) spawnRow()
             distanceToNextSpawn += spawnGapZ
         }
 
         // Roadside pillars for a sense of speed.
         pillarTimer -= speed * dt
         if (pillarTimer <= 0f) {
-            pillars.add(Pillar(if (rng.nextBoolean()) -1 else 1, zFar, 0.7f + rng.nextFloat() * 0.5f))
-            pillarTimer += 0.55f
+            pillars.add(Pillar(if (rng.nextBoolean()) -1 else 1, zFar, 0.7f + rng.nextFloat() * 0.6f))
+            pillarTimer += 0.5f
         }
 
         advanceAndResolve(dt)
@@ -178,27 +223,16 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
 
     private fun spawnRow() {
         val openLane = rng.nextInt(3)
-        when (rng.nextInt(6)) {
+        // Ease players in: only single, simple obstacles during the early game.
+        val easy = gameTime < graceTime + 7f
+        val roll = if (easy) rng.nextInt(3) else rng.nextInt(6)
+        when (roll) {
             0 -> obstacles.add(Obstacle(rng.nextInt(3), zFar, ObstacleType.BARRIER))
             1 -> obstacles.add(Obstacle(rng.nextInt(3), zFar, ObstacleType.OVERHANG))
-            2 -> {
-                obstacles.add(Obstacle(rng.nextInt(3), zFar, ObstacleType.BLOCK))
-            }
-            3 -> {
-                // Two blocks, leaving exactly one lane open.
-                for (l in 0..2) if (l != openLane) {
-                    obstacles.add(Obstacle(l, zFar, ObstacleType.BLOCK))
-                }
-            }
-            4 -> {
-                // Barrier on two lanes — jump or dodge.
-                for (l in 0..2) if (l != openLane) {
-                    obstacles.add(Obstacle(l, zFar, ObstacleType.BARRIER))
-                }
-            }
-            else -> {
-                obstacles.add(Obstacle(rng.nextInt(3), zFar, ObstacleType.OVERHANG))
-            }
+            2 -> obstacles.add(Obstacle(rng.nextInt(3), zFar, ObstacleType.BLOCK))
+            3 -> for (l in 0..2) if (l != openLane) obstacles.add(Obstacle(l, zFar, ObstacleType.BLOCK))
+            4 -> for (l in 0..2) if (l != openLane) obstacles.add(Obstacle(l, zFar, ObstacleType.BARRIER))
+            else -> obstacles.add(Obstacle(rng.nextInt(3), zFar, ObstacleType.OVERHANG))
         }
 
         // Drop a relic on a lane that has no block this row.
@@ -234,6 +268,7 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
                 c.collected = true
                 coinCount++
                 score += coinValue
+                spawnPickupBurst(laneXAt(c.lane.toFloat(), 0f), groundYAt(0f) - screenH * 0.10f)
             }
             if (c.z < zCull) coinIt.remove()
         }
@@ -253,15 +288,46 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         ObstacleType.BLOCK -> false
     }
 
+    private fun spawnPickupBurst(x: Float, y: Float) {
+        repeat(10) {
+            val ang = rng.nextFloat() * 6.2832f
+            val sp = (0.6f + rng.nextFloat()) * screenH * 0.45f
+            particles.add(
+                Particle(
+                    x, y,
+                    cos(ang.toDouble()).toFloat() * sp,
+                    sin(ang.toDouble()).toFloat() * sp - screenH * 0.2f,
+                    0.55f, 0.55f,
+                    if (rng.nextBoolean()) Color.rgb(255, 224, 130) else Color.rgb(255, 196, 64),
+                    screenW * (0.008f + rng.nextFloat() * 0.01f)
+                )
+            )
+        }
+    }
+
+    private fun updateParticles(dt: Float) {
+        val it = particles.iterator()
+        while (it.hasNext()) {
+            val p = it.next()
+            p.life -= dt
+            if (p.life <= 0f) { it.remove(); continue }
+            p.x += p.vx * dt
+            p.y += p.vy * dt
+            p.vy += screenH * 1.6f * dt   // gravity
+        }
+    }
+
     // ---- Game flow -----------------------------------------------------------------------
     private fun startGame() {
         obstacles.clear()
         coins.clear()
         pillars.clear()
+        particles.clear()
         player.reset()
         speed = startSpeed
         distanceToNextSpawn = spawnGapZ
         pillarTimer = 0f
+        gameTime = 0f
         score = 0
         coinCount = 0
         state = GameState.PLAYING
@@ -269,6 +335,7 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
 
     private fun gameOver() {
         state = GameState.GAME_OVER
+        crashFlash = 1f
         if (score > highScore) {
             highScore = score
             prefs.edit().putInt("highScore", highScore).apply()
@@ -320,68 +387,132 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         drawScenery(canvas)
         drawWorldObjects(canvas)
         if (state != GameState.READY) drawPlayer(canvas)
+        drawParticles(canvas)
+        drawVignette(canvas)
+        if (state == GameState.PLAYING && gameTime < tutorialTime) drawTutorial(canvas)
         drawHud(canvas)
+        if (crashFlash > 0f) {
+            paint.color = Color.argb((crashFlash * 130).toInt(), 200, 40, 40)
+            canvas.drawRect(0f, 0f, screenW, screenH, paint)
+        }
         drawOverlay(canvas)
     }
 
     private fun drawSky(canvas: Canvas) {
+        val hy = horizonY()
         paint.shader = skyShader
-        canvas.drawRect(0f, 0f, screenW, horizonY(), paint)
+        canvas.drawRect(0f, 0f, screenW, hy, paint)
         paint.shader = null
+
+        // Sun with a soft halo.
+        val sx = screenW * 0.72f
+        val sy = hy * 0.42f
+        paint.color = Color.argb(60, 255, 220, 150)
+        canvas.drawCircle(sx, sy, hy * 0.34f, paint)
+        paint.color = Color.rgb(255, 232, 176)
+        canvas.drawCircle(sx, sy, hy * 0.16f, paint)
+
+        // Distant temple / mountain silhouette along the horizon.
+        paint.color = Color.rgb(40, 58, 70)
+        val ridge = Path().apply {
+            moveTo(0f, hy)
+            var x = 0f
+            val step = screenW / 8f
+            var i = 0
+            while (x <= screenW) {
+                val peak = hy - (0.10f + 0.06f * (1 + sin((i * 1.3f).toDouble()).toFloat())) * screenH
+                lineTo(x + step * 0.5f, peak)
+                lineTo(x + step, hy)
+                x += step
+                i++
+            }
+            lineTo(screenW, hy)
+            close()
+        }
+        canvas.drawPath(ridge, paint)
+
+        // A central stepped pyramid for a "temple" landmark.
+        paint.color = Color.rgb(54, 70, 78)
+        val px = screenW * 0.30f
+        val baseW = screenW * 0.22f
+        var ty = hy
+        var tw = baseW
+        repeat(4) {
+            val th = hy * 0.07f
+            canvas.drawRect(px - tw / 2f, ty - th, px + tw / 2f, ty, paint)
+            ty -= th
+            tw *= 0.74f
+        }
     }
 
     private fun drawRoad(canvas: Canvas) {
-        // Trapezoidal road from horizon to bottom.
+        val hy = horizonY()
+        val by = groundBottomY()
+
+        // Jungle ground fills everything below the horizon.
+        paint.shader = groundShader
+        canvas.drawRect(0f, hy, screenW, screenH, paint)
+        paint.shader = null
+
+        // Trapezoidal stone road.
         val nearL = laneXAt(-0.5f, 0f)
         val nearR = laneXAt(2.5f, 0f)
         val farL = laneXAt(-0.5f, zFar)
         val farR = laneXAt(2.5f, zFar)
-        val hy = horizonY()
-        val by = groundBottomY()
-
-        paint.color = Color.rgb(74, 54, 38)
+        paint.color = Color.rgb(86, 66, 48)
         val road = Path().apply {
             moveTo(farL, hy); lineTo(farR, hy); lineTo(nearR, by); lineTo(nearL, by); close()
         }
         canvas.drawPath(road, paint)
 
-        // Lane divider lines (between the 3 lanes).
-        paint.color = Color.rgb(120, 96, 70)
-        paint.strokeWidth = max(2f, screenW * 0.006f)
+        // Slightly lighter centre lane for depth.
+        paint.color = Color.rgb(98, 76, 56)
+        val cL = laneXAt(0.5f, 0f); val cR = laneXAt(1.5f, 0f)
+        val cFL = laneXAt(0.5f, zFar); val cFR = laneXAt(1.5f, zFar)
+        canvas.drawPath(Path().apply {
+            moveTo(cFL, hy); lineTo(cFR, hy); lineTo(cR, by); lineTo(cL, by); close()
+        }, paint)
+
+        // Glowing curbs along both road edges.
+        paint.color = Color.rgb(150, 120, 80)
+        paint.strokeWidth = max(3f, screenW * 0.012f)
+        canvas.drawLine(farL, hy, nearL, by, paint)
+        canvas.drawLine(farR, hy, nearR, by, paint)
+
+        // Lane divider lines.
+        paint.color = Color.argb(140, 200, 170, 120)
+        paint.strokeWidth = max(2f, screenW * 0.005f)
         for (divider in floatArrayOf(0.5f, 1.5f)) {
-            canvas.drawLine(
-                laneXAt(divider, zFar), hy,
-                laneXAt(divider, 0f), by, paint
-            )
+            canvas.drawLine(laneXAt(divider, zFar), hy, laneXAt(divider, 0f), by, paint)
         }
 
         // Scrolling rungs to convey speed.
-        paint.color = Color.rgb(96, 74, 52)
-        var z = zFar - (roadScroll * 0.18f)
+        paint.color = Color.argb(90, 60, 44, 30)
+        var z = zFar - (roadScroll * 0.16f)
         while (z > 0f) {
             val y = groundYAt(z)
-            val thickness = max(1.5f, 7f * scaleAt(z))
-            paint.strokeWidth = thickness
+            paint.strokeWidth = max(1.5f, 8f * scaleAt(z))
             canvas.drawLine(laneXAt(-0.5f, z), y, laneXAt(2.5f, z), y, paint)
-            z -= 0.18f
+            z -= 0.16f
         }
     }
 
     private fun drawScenery(canvas: Canvas) {
         // Draw pillars far-to-near (painter's algorithm).
-        val sorted = pillars.sortedByDescending { it.z }
-        for (p in sorted) {
+        for (p in pillars.sortedByDescending { it.z }) {
             if (p.z <= 0f) continue
             val s = scaleAt(p.z)
             val baseY = groundYAt(p.z)
-            val laneFrac = if (p.side < 0) -1.3f else 3.3f
-            val x = laneXAt(laneFrac, p.z)
-            val w = screenW * 0.10f * s
-            val h = screenH * 0.5f * s * p.height
-            paint.color = Color.rgb(58, 70, 58)
+            val x = laneXAt(if (p.side < 0) -1.35f else 3.35f, p.z)
+            val w = screenW * 0.11f * s
+            val h = screenH * 0.55f * s * p.height
+            // Pillar body with a shaded side + mossy cap.
+            paint.color = Color.rgb(120, 112, 96)
             canvas.drawRect(x - w / 2f, baseY - h, x + w / 2f, baseY, paint)
-            paint.color = Color.rgb(44, 54, 44)
-            canvas.drawRect(x - w / 2f, baseY - h, x - w / 2f + w * 0.3f, baseY, paint)
+            paint.color = Color.rgb(92, 86, 72)
+            canvas.drawRect(x - w / 2f, baseY - h, x - w / 2f + w * 0.32f, baseY, paint)
+            paint.color = Color.rgb(74, 116, 70)
+            canvas.drawRect(x - w / 2f * 1.15f, baseY - h, x + w / 2f * 1.15f, baseY - h + h * 0.08f, paint)
         }
     }
 
@@ -395,48 +526,64 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         for (d in list) d.draw()
     }
 
-    private fun drawHud(canvas: Canvas) {
-        textPaint.textAlign = Paint.Align.LEFT
-        textPaint.color = Color.WHITE
-        canvas.drawText("Score: $score", screenW * 0.05f, screenH * 0.07f, textPaint)
-        textPaint.textAlign = Paint.Align.RIGHT
-        canvas.drawText("Relics: $coinCount", screenW * 0.95f, screenH * 0.07f, textPaint)
-        textPaint.color = Color.rgb(255, 210, 74)
-        canvas.drawText("Best: $highScore", screenW * 0.95f, screenH * 0.115f, textPaint)
-        textPaint.textAlign = Paint.Align.LEFT
-        textPaint.color = Color.WHITE
-    }
-
     private fun drawObstacle(canvas: Canvas, o: Obstacle) {
         val s = scaleAt(o.z)
         val baseY = groundYAt(o.z)
         val cx = laneXAt(o.lane.toFloat(), o.z)
-        val w = laneSpacing() * 0.7f * s
+        val w = laneSpacing() * 0.72f * s
+        outline.strokeWidth = max(1.5f, 2.5f * s)
         when (o.type) {
             ObstacleType.BARRIER -> {
-                val h = screenH * 0.10f * s
-                paint.color = Color.rgb(206, 132, 46)
-                canvas.drawRect(cx - w / 2f, baseY - h, cx + w / 2f, baseY, paint)
-                paint.color = Color.rgb(150, 92, 28)
-                canvas.drawRect(cx - w / 2f, baseY - h, cx + w / 2f, baseY - h * 0.7f, paint)
+                // Caution-striped hurdle on two legs — jump it.
+                val h = screenH * 0.11f * s
+                val top = baseY - h
+                paint.color = Color.rgb(60, 48, 36)
+                canvas.drawRect(cx - w / 2f, top, cx - w / 2f + w * 0.1f, baseY, paint)
+                canvas.drawRect(cx + w / 2f - w * 0.1f, top, cx + w / 2f, baseY, paint)
+                val barTop = top
+                val barBot = top + h * 0.5f
+                paint.color = Color.rgb(240, 196, 64)
+                canvas.drawRect(cx - w / 2f, barTop, cx + w / 2f, barBot, paint)
+                paint.color = Color.rgb(40, 36, 32)
+                var sx = cx - w / 2f
+                val stripeW = w * 0.16f
+                var i = 0
+                while (sx < cx + w / 2f) {
+                    if (i % 2 == 0) canvas.drawRect(sx, barTop, (sx + stripeW).coerceAtMost(cx + w / 2f), barBot, paint)
+                    sx += stripeW; i++
+                }
+                canvas.drawRect(cx - w / 2f, barTop, cx + w / 2f, barBot, outline)
             }
             ObstacleType.OVERHANG -> {
-                val gap = screenH * 0.13f * s          // gap to slide through
-                val beamH = screenH * 0.10f * s
+                // Stone arch with a clear gap underneath — slide through.
+                val gap = screenH * 0.14f * s
+                val beamH = screenH * 0.11f * s
                 val top = baseY - gap - beamH
-                paint.color = Color.rgb(150, 150, 158)
+                paint.color = Color.rgb(168, 162, 150)
                 canvas.drawRect(cx - w / 2f, top, cx + w / 2f, top + beamH, paint)
-                // Side posts.
-                paint.color = Color.rgb(110, 110, 118)
-                canvas.drawRect(cx - w / 2f, top, cx - w / 2f + w * 0.12f, baseY, paint)
-                canvas.drawRect(cx + w / 2f - w * 0.12f, top, cx + w / 2f, baseY, paint)
+                paint.color = Color.rgb(132, 126, 116)
+                canvas.drawRect(cx - w / 2f, top + beamH * 0.6f, cx + w / 2f, top + beamH, paint)
+                paint.color = Color.rgb(120, 114, 104)
+                canvas.drawRect(cx - w / 2f, top, cx - w / 2f + w * 0.14f, baseY, paint)
+                canvas.drawRect(cx + w / 2f - w * 0.14f, top, cx + w / 2f, baseY, paint)
+                canvas.drawRect(cx - w / 2f, top, cx + w / 2f, top + beamH, outline)
             }
             ObstacleType.BLOCK -> {
-                val h = screenH * 0.26f * s
-                paint.color = Color.rgb(72, 60, 92)
-                canvas.drawRect(cx - w / 2f, baseY - h, cx + w / 2f, baseY, paint)
-                paint.color = Color.rgb(52, 42, 68)
-                canvas.drawRect(cx - w / 2f, baseY - h, cx + w / 2f, baseY - h * 0.85f, paint)
+                // Tall stone block — cannot pass, change lanes.
+                val h = screenH * 0.27f * s
+                val top = baseY - h
+                paint.color = Color.rgb(96, 80, 120)
+                canvas.drawRect(cx - w / 2f, top, cx + w / 2f, baseY, paint)
+                paint.color = Color.rgb(70, 56, 92)
+                canvas.drawRect(cx - w / 2f, top, cx - w / 2f + w * 0.32f, baseY, paint)
+                paint.color = Color.rgb(126, 110, 150)
+                canvas.drawRect(cx - w / 2f, top, cx + w / 2f, top + h * 0.12f, paint)
+                // Brick seams.
+                paint.color = Color.argb(80, 40, 30, 56)
+                paint.strokeWidth = max(1f, 1.6f * s)
+                canvas.drawLine(cx - w / 2f, top + h * 0.5f, cx + w / 2f, top + h * 0.5f, paint)
+                canvas.drawLine(cx, top + h * 0.12f, cx, top + h * 0.5f, paint)
+                canvas.drawRect(cx - w / 2f, top, cx + w / 2f, baseY, outline)
             }
         }
     }
@@ -445,90 +592,214 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         val s = scaleAt(c.z)
         val baseY = groundYAt(c.z)
         val cx = laneXAt(c.lane.toFloat(), c.z)
-        val bob = sin((runCycle + c.z * 6f).toDouble()).toFloat() * screenH * 0.012f * s
-        val cy = baseY - screenH * 0.09f * s + bob
-        val r = screenW * 0.045f * s
-        paint.color = Color.rgb(255, 210, 74)
-        canvas.drawCircle(cx, cy, r, paint)
-        paint.color = Color.rgb(214, 160, 40)
-        canvas.drawCircle(cx, cy, r * 0.62f, paint)
+        val bob = sin((uiTime * 3f + c.z * 6f).toDouble()).toFloat() * screenH * 0.012f * s
+        val cy = baseY - screenH * 0.10f * s + bob
+        val r = screenW * 0.05f * s
+        // Spin: horizontal radius oscillates to fake a rotating gem.
+        val spin = abs(cos((uiTime * 4f + c.z * 8f).toDouble()).toFloat())
+        val rx = r * (0.25f + 0.75f * spin)
+
+        // Glow halo.
+        paint.color = Color.argb(70, 255, 220, 120)
+        canvas.drawCircle(cx, cy, r * 1.5f, paint)
+
+        // Diamond relic.
+        paint.color = Color.rgb(255, 214, 74)
+        val gem = Path().apply {
+            moveTo(cx, cy - r); lineTo(cx + rx, cy); lineTo(cx, cy + r); lineTo(cx - rx, cy); close()
+        }
+        canvas.drawPath(gem, paint)
+        paint.color = Color.rgb(255, 240, 180)
+        val facet = Path().apply {
+            moveTo(cx, cy - r); lineTo(cx + rx, cy); lineTo(cx, cy); lineTo(cx - rx, cy); close()
+        }
+        canvas.drawPath(facet, paint)
     }
 
     private fun drawPlayer(canvas: Canvas) {
-        val z = 0f
-        val baseY = groundYAt(z) - screenH * 0.02f
-        val cx = laneXAt(player.laneFrac, z)
+        val baseY = groundYAt(0f) - screenH * 0.02f
+        val cx = laneXAt(player.laneFrac, 0f)
         val jump = player.height * screenH * 0.30f
         val bodyW = screenW * 0.11f
-        var bodyH = screenH * 0.16f
-        if (player.isSliding) bodyH *= 0.55f
+        var bodyH = screenH * 0.17f
+        if (player.isSliding) bodyH *= 0.5f
 
         val feetY = baseY - jump
         val topY = feetY - bodyH
+        val swing = sin(runCycle.toDouble()).toFloat()
 
-        // Shadow shrinks as you rise.
-        paint.color = Color.argb((90 * (1f - player.height).coerceIn(0.2f, 1f)).toInt(), 0, 0, 0)
+        // Soft shadow that shrinks as the player rises.
+        paint.color = Color.argb((110 * (1f - player.height).coerceIn(0.25f, 1f)).toInt(), 0, 0, 0)
         canvas.drawOval(
-            RectF(cx - bodyW * 0.7f, baseY - bodyW * 0.18f, cx + bodyW * 0.7f, baseY + bodyW * 0.18f),
+            RectF(cx - bodyW * 0.75f, baseY - bodyW * 0.16f, cx + bodyW * 0.75f, baseY + bodyW * 0.18f),
             paint
         )
 
-        // Body.
-        paint.color = Color.rgb(64, 200, 196)
-        canvas.drawRoundRect(
-            RectF(cx - bodyW / 2f, topY, cx + bodyW / 2f, feetY),
-            bodyW * 0.3f, bodyW * 0.3f, paint
-        )
+        // Back arm (drawn first so it sits behind the body).
+        paint.strokeWidth = bodyW * 0.26f
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.color = Color.rgb(40, 150, 150)
+        val shoulderY = topY + bodyH * 0.32f
+        canvas.drawLine(cx, shoulderY, cx - swing * bodyW * 0.5f, shoulderY + bodyH * 0.32f, paint)
 
-        // Head.
-        val headR = bodyW * 0.42f
-        paint.color = Color.rgb(244, 206, 160)
-        canvas.drawCircle(cx, topY - headR * 0.7f, headR, paint)
-
-        // Running legs (skip while sliding/jumping for a settled look).
-        if (!player.isSliding && player.height < 0.02f) {
-            val swing = sin(runCycle.toDouble()).toFloat() * bodyW * 0.5f
-            paint.color = Color.rgb(40, 150, 150)
-            paint.strokeWidth = bodyW * 0.22f
-            canvas.drawLine(cx, feetY, cx + swing, feetY + bodyH * 0.22f, paint)
-            canvas.drawLine(cx, feetY, cx - swing, feetY + bodyH * 0.22f, paint)
+        // Legs (running stride, tucked while sliding/jumping).
+        if (!player.isSliding && player.height < 0.04f) {
+            canvas.drawLine(cx, feetY, cx + swing * bodyW * 0.55f, feetY + bodyH * 0.2f, paint)
+            canvas.drawLine(cx, feetY, cx - swing * bodyW * 0.55f, feetY + bodyH * 0.2f, paint)
         }
+
+        // Body.
+        paint.color = Color.rgb(72, 210, 200)
+        canvas.drawRoundRect(
+            RectF(cx - bodyW / 2f, topY, cx + bodyW / 2f, feetY), bodyW * 0.32f, bodyW * 0.32f, paint
+        )
+        // Chest sash for a bit of character.
+        paint.color = Color.rgb(236, 132, 72)
+        canvas.drawRect(cx - bodyW / 2f, topY + bodyH * 0.32f, cx + bodyW / 2f, topY + bodyH * 0.46f, paint)
+
+        // Front arm.
+        paint.color = Color.rgb(60, 188, 184)
+        canvas.drawLine(cx, shoulderY, cx + swing * bodyW * 0.6f, shoulderY + bodyH * 0.34f, paint)
+
+        // Head with a simple cap.
+        val headR = bodyW * 0.42f
+        val headCy = topY - headR * 0.6f
+        paint.color = Color.rgb(244, 206, 160)
+        canvas.drawCircle(cx, headCy, headR, paint)
+        paint.color = Color.rgb(180, 96, 60)
+        canvas.drawArc(
+            RectF(cx - headR, headCy - headR, cx + headR, headCy + headR),
+            180f, 180f, true, paint
+        )
+        paint.strokeCap = Paint.Cap.BUTT
+    }
+
+    private fun drawParticles(canvas: Canvas) {
+        for (p in particles) {
+            val a = (p.life / p.maxLife).coerceIn(0f, 1f)
+            paint.color = Color.argb((a * 255).toInt(), Color.red(p.color), Color.green(p.color), Color.blue(p.color))
+            canvas.drawCircle(p.x, p.y, p.size * (0.4f + a), paint)
+        }
+    }
+
+    private fun drawVignette(canvas: Canvas) {
+        paint.shader = vignetteShader
+        canvas.drawRect(0f, 0f, screenW, screenH, paint)
+        paint.shader = null
+    }
+
+    // ---- In-game tutorial (first ~10 seconds) --------------------------------------------
+    private fun drawTutorial(canvas: Canvas) {
+        data class Tip(val start: Float, val end: Float, val text: String)
+        val tips = listOf(
+            Tip(0f, 3f, "◀  Swipe left / right to change lanes  ▶"),
+            Tip(3f, 6f, "▲  Swipe up to JUMP the striped hurdles"),
+            Tip(6f, 9f, "▼  Swipe down to SLIDE under stone arches"),
+            Tip(9f, tutorialTime, "Dodge tall blocks • grab relics • survive!")
+        )
+        val tip = tips.firstOrNull { gameTime >= it.start && gameTime < it.end } ?: return
+        val local = gameTime - tip.start
+        val span = tip.end - tip.start
+        val alpha = (minOf(local, span - local, 0.4f) / 0.4f).coerceIn(0f, 1f)
+
+        // Banner background.
+        val by = screenH * 0.20f
+        val bh = screenH * 0.075f
+        paint.color = Color.argb((alpha * 165).toInt(), 12, 22, 18)
+        canvas.drawRoundRect(
+            RectF(screenW * 0.06f, by, screenW * 0.94f, by + bh), bh * 0.3f, bh * 0.3f, paint
+        )
+        centerText.color = Color.argb((alpha * 255).toInt(), 255, 240, 200)
+        centerText.textSize = screenH * 0.028f
+        canvas.drawText(tip.text, screenW / 2f, by + bh * 0.64f, centerText)
+
+        // Persistent mini control legend at the bottom during the guide.
+        textPaint.textAlign = Paint.Align.CENTER
+        textPaint.textSize = screenH * 0.024f
+        textPaint.color = Color.argb(200, 230, 230, 230)
+        canvas.drawText("← →  lanes      ↑  jump      ↓  slide", screenW / 2f, screenH * 0.93f, textPaint)
+        textPaint.textAlign = Paint.Align.LEFT
+        textPaint.textSize = screenH * 0.030f
+        textPaint.color = Color.WHITE
+    }
+
+    private fun drawHud(canvas: Canvas) {
+        textPaint.textAlign = Paint.Align.LEFT
+        textPaint.color = Color.WHITE
+        canvas.drawText("Score  $score", screenW * 0.05f, screenH * 0.07f, textPaint)
+        textPaint.textAlign = Paint.Align.RIGHT
+        textPaint.color = Color.rgb(255, 214, 74)
+        canvas.drawText("◆ $coinCount", screenW * 0.95f, screenH * 0.07f, textPaint)
+        textPaint.color = Color.argb(200, 230, 230, 230)
+        textPaint.textSize = screenH * 0.024f
+        canvas.drawText("Best $highScore", screenW * 0.95f, screenH * 0.108f, textPaint)
+        textPaint.textSize = screenH * 0.030f
+        textPaint.textAlign = Paint.Align.LEFT
+        textPaint.color = Color.WHITE
     }
 
     private fun drawOverlay(canvas: Canvas) {
         when (state) {
             GameState.READY -> {
                 dim(canvas)
-                centerText.color = Color.rgb(255, 210, 74)
-                centerText.textSize = screenH * 0.075f
-                canvas.drawText("RELIC RUSH", screenW / 2f, screenH * 0.34f, centerText)
+                // Title with drop shadow.
+                centerText.textSize = screenH * 0.08f
+                centerText.color = Color.argb(150, 0, 0, 0)
+                canvas.drawText("RELIC RUSH", screenW / 2f + 4f, screenH * 0.26f + 4f, centerText)
+                centerText.color = Color.rgb(255, 214, 74)
+                canvas.drawText("RELIC RUSH", screenW / 2f, screenH * 0.26f, centerText)
+
+                // How-to-play card.
+                val cardTop = screenH * 0.34f
+                val cardBot = screenH * 0.62f
+                paint.color = Color.argb(150, 12, 24, 18)
+                canvas.drawRoundRect(
+                    RectF(screenW * 0.10f, cardTop, screenW * 0.90f, cardBot),
+                    screenW * 0.04f, screenW * 0.04f, paint
+                )
                 centerText.color = Color.WHITE
-                centerText.textSize = screenH * 0.034f
-                canvas.drawText("Tap to run", screenW / 2f, screenH * 0.46f, centerText)
+                centerText.textSize = screenH * 0.032f
+                canvas.drawText("HOW TO PLAY", screenW / 2f, cardTop + screenH * 0.045f, centerText)
+                centerText.textSize = screenH * 0.027f
+                centerText.color = Color.rgb(220, 224, 220)
+                val lx = cardTop + screenH * 0.095f
+                val gap = screenH * 0.042f
+                canvas.drawText("← →   switch lanes", screenW / 2f, lx, centerText)
+                canvas.drawText("↑   jump over hurdles", screenW / 2f, lx + gap, centerText)
+                canvas.drawText("↓   slide under arches", screenW / 2f, lx + gap * 2, centerText)
+                canvas.drawText("◆   collect relics, dodge blocks", screenW / 2f, lx + gap * 3, centerText)
+
+                // Pulsing start prompt.
+                val pulse = 0.6f + 0.4f * sin(uiTime * 3.0).toFloat()
+                centerText.color = Color.argb((pulse * 255).toInt(), 255, 255, 255)
+                centerText.textSize = screenH * 0.038f
+                canvas.drawText("TAP TO START", screenW / 2f, screenH * 0.72f, centerText)
+                centerText.color = Color.argb(180, 255, 214, 74)
                 centerText.textSize = screenH * 0.026f
-                canvas.drawText("Swipe ← → to switch lanes", screenW / 2f, screenH * 0.55f, centerText)
-                canvas.drawText("Swipe ↑ to jump  •  ↓ to slide", screenW / 2f, screenH * 0.59f, centerText)
+                canvas.drawText("Best  $highScore", screenW / 2f, screenH * 0.78f, centerText)
             }
             GameState.GAME_OVER -> {
                 dim(canvas)
                 centerText.color = Color.rgb(236, 96, 80)
-                centerText.textSize = screenH * 0.07f
+                centerText.textSize = screenH * 0.072f
                 canvas.drawText("GAME OVER", screenW / 2f, screenH * 0.36f, centerText)
                 centerText.color = Color.WHITE
                 centerText.textSize = screenH * 0.04f
                 canvas.drawText("Score  $score", screenW / 2f, screenH * 0.47f, centerText)
-                centerText.color = Color.rgb(255, 210, 74)
-                canvas.drawText("Best  $highScore", screenW / 2f, screenH * 0.53f, centerText)
-                centerText.color = Color.WHITE
-                centerText.textSize = screenH * 0.03f
-                canvas.drawText("Tap to try again", screenW / 2f, screenH * 0.62f, centerText)
+                canvas.drawText("Relics  $coinCount", screenW / 2f, screenH * 0.525f, centerText)
+                centerText.color = Color.rgb(255, 214, 74)
+                canvas.drawText("Best  $highScore", screenW / 2f, screenH * 0.58f, centerText)
+                val pulse = 0.6f + 0.4f * sin(uiTime * 3.0).toFloat()
+                centerText.color = Color.argb((pulse * 255).toInt(), 255, 255, 255)
+                centerText.textSize = screenH * 0.032f
+                canvas.drawText("TAP TO TRY AGAIN", screenW / 2f, screenH * 0.68f, centerText)
             }
             GameState.PLAYING -> { /* no overlay */ }
         }
     }
 
     private fun dim(canvas: Canvas) {
-        paint.color = Color.argb(140, 0, 0, 0)
+        paint.color = Color.argb(150, 0, 0, 0)
         canvas.drawRect(0f, 0f, screenW, screenH, paint)
     }
 }
