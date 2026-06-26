@@ -115,6 +115,8 @@ var debris: Array = []          # tornado flying debris [{node, vel, spin}]
 var debris_timer := 0.0
 var sand_root: Node3D
 var sand_bits: Array = []
+var dust: Array = []           # running foot dust [{node, vel, life}]
+var dust_timer := 0.0
 var dashes: Array = []
 var buildings: Array = []
 var build_timer := 0.0
@@ -520,6 +522,20 @@ func _build_effects() -> void:
 		sand_bits.append(s)
 	sand_root.visible = false
 
+	# Running foot-dust puffs.
+	for i in 10:
+		var dn := MeshInstance3D.new()
+		add_child(dn)
+		var sm := SphereMesh.new(); sm.radius = 0.16; sm.height = 0.32
+		dn.mesh = sm
+		var dm := StandardMaterial3D.new()
+		dm.albedo_color = Color(0.7, 0.66, 0.55, 0.0)
+		dm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		dm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		dn.material_override = dm
+		dn.visible = false
+		dust.append({"node": dn, "vel": Vector3.ZERO, "life": 0.0})
+
 func _update_biome(dt: float) -> void:
 	biome_timer -= dt
 	if biome_timer <= 0.0:
@@ -561,6 +577,34 @@ func _update_effects(dt: float) -> void:
 			s.position.x -= (11.0 + speed) * dt
 			if s.position.x < -10.0:
 				s.position = Vector3(10.0, randf_range(-3, 4), -randf_range(3, 12))
+
+	# Foot dust kicked up while running on the ground.
+	if state != St.OVER and p_y < 0.2 and tank_t <= 0.0 and jet_t <= 0.0:
+		dust_timer -= dt
+		if dust_timer <= 0.0:
+			dust_timer = 0.05
+			var dcol := Color(0.72, 0.66, 0.55)
+			match biomes[biome_idx]["name"]:
+				"City": dcol = Color(0.6, 0.6, 0.62)
+				"Forest": dcol = Color(0.5, 0.58, 0.42)
+			for d in dust:
+				if not d["node"].visible:
+					d["node"].visible = true
+					d["node"].position = Vector3(p_x + randf_range(-0.25, 0.25), 0.12, 0.3)
+					d["node"].scale = Vector3.ONE * 0.6
+					d["vel"] = Vector3(randf_range(-0.4, 0.4), randf_range(0.4, 0.9), randf_range(2.5, 4.5))
+					d["life"] = 0.5
+					(d["node"].material_override as StandardMaterial3D).albedo_color = Color(dcol.r, dcol.g, dcol.b, 0.6)
+					break
+	for d in dust:
+		if d["node"].visible:
+			d["life"] -= dt
+			d["node"].position += d["vel"] * dt
+			d["node"].scale *= (1.0 + dt * 1.8)
+			var dm := d["node"].material_override as StandardMaterial3D
+			dm.albedo_color.a = clamp(d["life"] / 0.5, 0.0, 1.0) * 0.6
+			if d["life"] <= 0.0:
+				d["node"].visible = false
 
 func _build_environment() -> void:
 	var we := WorldEnvironment.new()
@@ -1066,7 +1110,8 @@ func _add_powerup(lane: int, type: String) -> void:
 	var ring := _cyl(0.6, 0.08, col, n, Vector3.ZERO)
 	ring.rotation_degrees = Vector3(90, 0, 0)
 	ring.material_override = _mat(col, 0.8)
-	n.position = Vector3(_lane_x(lane), 1.5, SPAWN_Z)
+	# Sit mid-gap between obstacle rows, so a power-up is never on or near a hazard.
+	n.position = Vector3(_lane_x(lane), 1.5, SPAWN_Z - GAP_Z * 0.5)
 	powerups.append({"node": n, "lane": lane, "type": type, "taken": false})
 
 func _spawn_row() -> void:
@@ -1092,9 +1137,9 @@ func _spawn_row() -> void:
 	for l in [0, 1]:
 		if not occ.has(l):
 			clear.append(l)
-	# Power-ups spawn ONLY in a fully clear lane so you never crash to grab one.
-	if clear.size() > 0 and randf() < 0.14:
-		_add_powerup(clear[randi() % clear.size()], ["shield", "magnet", "mult", "jet", "tank", "gun"][randi() % 6])
+	# Power-ups float mid-gap (clear of all hazards), so any lane is safe.
+	if randf() < 0.14:
+		_add_powerup(randi() % 2, ["shield", "magnet", "mult", "jet", "tank", "gun"][randi() % 6])
 	elif randf() < 0.85:
 		# Coins prefer a clear lane (can sit above a barrier you jump to grab).
 		var cl: Array = clear if clear.size() > 0 else [0, 1]
