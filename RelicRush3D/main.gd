@@ -149,6 +149,13 @@ func _mat(col: Color, emit_e := 0.0, metallic := 0.0, rough := 0.85) -> Standard
 		m.emission_energy_multiplier = emit_e
 	return m
 
+func _flat(col: Color) -> StandardMaterial3D:
+	# Unlit flat colour to match the kit's KHR_materials_unlit look.
+	var m := StandardMaterial3D.new()
+	m.albedo_color = col
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	return m
+
 func _box(size: Vector3, col: Color, parent: Node3D, pos := Vector3.ZERO, emit := 0.0) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	var bm := BoxMesh.new()
@@ -273,10 +280,11 @@ func _build_environment() -> void:
 
 	sun = DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-52, -38, 0)
-	sun.light_energy = 1.15
+	sun.light_energy = 1.35
+	sun.light_color = Color(1.0, 0.97, 0.9)
 	sun.shadow_enabled = true
-	sun.shadow_blur = 1.5
-	sun.directional_shadow_max_distance = 100.0
+	sun.shadow_blur = 1.2
+	sun.directional_shadow_max_distance = 110.0
 	add_child(sun)
 
 func _build_camera() -> void:
@@ -332,17 +340,29 @@ func _build_player() -> void:
 	player = Node3D.new()
 	add_child(player)
 
-	# Skateboard (kept procedural — the kit has no board).
-	board = Node3D.new(); player.add_child(board); board.position = Vector3(0, 0.1, 0)
-	_box(Vector3(0.95, 0.09, 0.34), Color(0.22, 0.76, 0.84), board, Vector3(0, 0, 0))
-	_box(Vector3(0.95, 0.05, 0.34), Color(0.12, 0.5, 0.6), board, Vector3(0, -0.05, 0))
-	for zx in [-0.32, 0.32]:
-		_cyl(0.11, 0.08, Color(0.95, 0.92, 0.85), board, Vector3(zx, -0.08, 0.0)).rotation_degrees = Vector3(0, 0, 90)
-
-	# Animated CC0 character (Kenney) riding the board.
-	runner_model = _add_model(runner_scene, player, 1.5, "y", true)
-	runner_model.position.y = 0.16
+	# Animated CC0 character (Kenney), recoloured into an original red-hoodie
+	# runner (running on foot — no skateboard).
+	runner_model = _add_model(runner_scene, player, 1.7, "y", true)
 	runner_model.rotation_degrees = Vector3(0, 180, 0)   # face away from the camera
+
+	var jacket := _flat(Color(0.86, 0.16, 0.16))
+	var legs := _flat(Color(0.17, 0.19, 0.25))
+	for pn in ["torso", "arm-left", "arm-right"]:
+		var m := runner_model.find_child(pn, true, false)
+		if m is MeshInstance3D:
+			(m as MeshInstance3D).material_override = jacket
+	for pn in ["leg-left", "leg-right"]:
+		var m := runner_model.find_child(pn, true, false)
+		if m is MeshInstance3D:
+			(m as MeshInstance3D).material_override = legs
+
+	# Long brown hair, parented to the head so it follows the animation.
+	var head := runner_model.find_child("head", true, false)
+	if head is MeshInstance3D:
+		var hair_c := Color(0.3, 0.19, 0.11)
+		_box(Vector3(0.58, 0.2, 0.58), hair_c, head, Vector3(0, 0.26, 0)).material_override = _flat(hair_c)
+		_box(Vector3(0.5, 0.55, 0.16), hair_c, head, Vector3(0, 0.02, -0.27)).material_override = _flat(hair_c)
+
 	var ap := runner_model.find_child("AnimationPlayer", true, false)
 	if ap != null:
 		runner_anim = ap as AnimationPlayer
