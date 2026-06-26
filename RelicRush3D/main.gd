@@ -7,7 +7,7 @@ extends Node3D
 ## swap them for the blockout meshes built here.
 
 # ---- Tuning -------------------------------------------------------------------
-const LANE_X := 1.7           # half-distance between the two lanes
+const LANE_X := 1.15          # half-distance between the two lanes
 const SPAWN_Z := -85.0        # how far ahead things appear (longer sightline)
 const CULL_Z := 12.0          # behind the camera -> recycle / remove
 const START_SPEED := 9.0      # gentler start
@@ -117,6 +117,22 @@ func _ready() -> void:
 	_build_ui()
 	_randomize_weather()
 	demo_caption = "Watch the demo…"
+	if "--shots" in OS.get_cmdline_args():
+		_run_shots()
+
+func _run_shots() -> void:
+	# Debug: capture a few frames to res://shots/ then quit (for development).
+	var d := DirAccess.open("res://")
+	if d != null and not d.dir_exists("shots"):
+		d.make_dir("shots")
+	await get_tree().create_timer(1.0).timeout
+	for i in range(8):
+		await get_tree().create_timer(0.8).timeout
+		await RenderingServer.frame_post_draw
+		var img := get_viewport().get_texture().get_image()
+		if img != null:
+			img.save_png("res://shots/shot_%d.png" % i)
+	get_tree().quit()
 
 
 # ==============================================================================
@@ -265,9 +281,9 @@ func _build_environment() -> void:
 
 func _build_camera() -> void:
 	cam = Camera3D.new()
-	cam.fov = 68.0
-	cam.position = Vector3(0, 4.3, 8.0)
-	cam.look_at_from_position(cam.position, Vector3(0, 0.9, -14), Vector3.UP)
+	cam.fov = 64.0
+	cam.position = Vector3(0, 3.1, 6.2)
+	cam.look_at_from_position(cam.position, Vector3(0, 0.7, -15), Vector3.UP)
 	add_child(cam)
 
 func _build_ground() -> void:
@@ -309,7 +325,7 @@ func _make_building() -> Node3D:
 		_box(Vector3(4, 14, 4), Color(0.42, 0.45, 0.5), b, Vector3(0, 7, 0))
 	else:
 		var scene: PackedScene = building_scenes[randi() % building_scenes.size()]
-		_add_model(scene, b, randf_range(11.0, 22.0), "y", true)
+		_add_model(scene, b, randf_range(7.0, 13.0), "y", true)
 	return b
 
 func _build_player() -> void:
@@ -378,13 +394,13 @@ func _build_weathers() -> void:
 		 "fog": 0.006, "fog_c": Color(0.85,0.78,0.8), "precip": 0},
 		{"name": "Rain", "top": Color(0.22,0.25,0.3), "hor": Color(0.45,0.5,0.55),
 		 "sun": Color(0.7,0.74,0.8), "sun_e": 0.5, "amb": 0.5, "night": 0.4,
-		 "fog": 0.012, "fog_c": Color(0.45,0.5,0.55), "precip": 1},
+		 "fog": 0.008, "fog_c": Color(0.45,0.5,0.55), "precip": 1},
 		{"name": "Snow", "top": Color(0.58,0.66,0.77), "hor": Color(0.88,0.91,0.95),
 		 "sun": Color(0.9,0.93,0.98), "sun_e": 0.8, "amb": 0.85, "night": 0.1,
-		 "fog": 0.01, "fog_c": Color(0.85,0.9,0.95), "precip": 2},
+		 "fog": 0.007, "fog_c": Color(0.85,0.9,0.95), "precip": 2},
 		{"name": "Fog", "top": Color(0.59,0.6,0.62), "hor": Color(0.8,0.81,0.82),
 		 "sun": Color(0.85,0.85,0.85), "sun_e": 0.6, "amb": 0.7, "night": 0.15,
-		 "fog": 0.03, "fog_c": Color(0.8,0.81,0.82), "precip": 0},
+		 "fog": 0.013, "fog_c": Color(0.8,0.81,0.82), "precip": 0},
 	]
 
 func _randomize_weather() -> void:
@@ -682,6 +698,8 @@ func _animate_player(dt: float) -> void:
 	# Lean into turns; sync the run animation to speed; squash low when sliding.
 	var lean: float = clamp((_lane_x(p_lane) - p_x) * 0.6, -0.5, 0.5)
 	player.rotation.z = -lean
+	# Gentle camera follow keeps the runner near centre while still reading lanes.
+	cam.position.x = lerp(cam.position.x, p_x * 0.4, clamp(dt * 6.0, 0.0, 1.0))
 	if runner_anim != null:
 		runner_anim.speed_scale = clamp(speed / 11.0, 0.7, 2.2)
 	if runner_model != null:
@@ -704,17 +722,18 @@ func _update_buildings(dt: float) -> void:
 	for b in buildings:
 		if b["active"]:
 			b["node"].position.z += move
-			if b["node"].position.z > CULL_Z + 8.0:
+			if b["node"].position.z > 10.0:
 				b["active"] = false
 				b["node"].position = Vector3(0, 0, 200)
 	build_timer -= speed * dt
 	if build_timer <= 0.0:
-		build_timer = randf_range(6.0, 11.0)
+		build_timer = randf_range(5.0, 9.0)
 		for side in [-1.0, 1.0]:
 			var slot = _free_building()
 			if slot != null:
 				slot["active"] = true
-				var off := randf_range(5.5, 9.0)
+				# Far to the side so buildings line the street without occluding it.
+				var off := randf_range(8.5, 13.0)
 				slot["node"].position = Vector3(side * (LANE_X + off), 0, SPAWN_Z - randf_range(0, 6))
 				slot["node"].rotation_degrees = Vector3(0, 90.0 if side < 0 else -90.0, 0)
 
