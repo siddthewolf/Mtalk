@@ -68,6 +68,7 @@ var runner_model: Node3D
 var runner_anim: AnimationPlayer
 var jog_clip := ""
 var car_scenes: Array = []
+var cone_scene: PackedScene
 var building_scenes: Array = []
 var streetlights: Array = []
 var light_timer := 0.0
@@ -78,6 +79,8 @@ var sfx_jump: AudioStreamPlayer
 var sfx_slide: AudioStreamPlayer
 var sfx_crash: AudioStreamPlayer
 var sfx_thunder: AudioStreamPlayer
+var sfx_powerup: AudioStreamPlayer
+var sfx_gameover: AudioStreamPlayer
 
 # Storm / tornado / lightning
 var lightning_flash := 0.0
@@ -101,6 +104,8 @@ var highlight_t := 0.0       # cinematic camera highlight on pickup
 var shield_bubble: Node3D
 var tank_model: Node3D
 var gun_model: Node3D
+var jet_flame: Node3D
+var sparks: Array = []         # destroy-effect sparks [{node, vel, life}]
 
 # Biomes / scenery
 var biomes: Array = []
@@ -312,6 +317,7 @@ func _load_assets() -> void:
 		var s = load("res://assets/car/car-%s.glb" % n)
 		if s != null:
 			car_scenes.append(s)
+	cone_scene = load("res://assets/car/cone.glb")
 	for c in ["a", "b", "c", "d", "e", "f", "g", "h"]:
 		var s = load("res://assets/city/building-%s.glb" % c)
 		if s != null:
@@ -383,6 +389,8 @@ func _build_audio() -> void:
 	sfx_crash = _audio("res://assets/sfx/crash.ogg", -1.0)
 	sfx_thunder = _audio("res://assets/sfx/crash.ogg", -1.0)
 	sfx_thunder.pitch_scale = 0.45   # lower/longer -> thunder rumble
+	sfx_powerup = _audio("res://assets/sfx/powerup.ogg", -4.0)
+	sfx_gameover = _audio("res://assets/sfx/gameover.ogg", -3.0)
 
 func _play(p: AudioStreamPlayer) -> void:
 	if p != null and p.stream != null:
@@ -536,6 +544,48 @@ func _build_effects() -> void:
 		dn.visible = false
 		dust.append({"node": dn, "vel": Vector3.ZERO, "life": 0.0})
 
+	# Spark/debris burst pool for destroyed obstacles.
+	for i in 24:
+		var sk := MeshInstance3D.new()
+		add_child(sk)
+		var bm := BoxMesh.new(); bm.size = Vector3(0.13, 0.13, 0.13)
+		sk.mesh = bm
+		var skm := StandardMaterial3D.new()
+		skm.albedo_color = Color(1.0, 0.7, 0.2)
+		skm.emission_enabled = true
+		skm.emission = Color(1.0, 0.55, 0.1)
+		skm.emission_energy_multiplier = 3.5
+		sk.material_override = skm
+		sk.visible = false
+		sparks.append({"node": sk, "vel": Vector3.ZERO, "life": 0.0})
+
+func _spark_burst(pos: Vector3) -> void:
+	var n := 0
+	for s in sparks:
+		if not s["node"].visible:
+			s["node"].visible = true
+			s["node"].position = pos
+			s["node"].scale = Vector3.ONE
+			s["vel"] = Vector3(randf_range(-4, 4), randf_range(2, 6), randf_range(-2, 5))
+			s["life"] = 0.5
+			n += 1
+			if n >= 9:
+				break
+
+func _landing_puff() -> void:
+	var n := 0
+	for d in dust:
+		if not d["node"].visible:
+			d["node"].visible = true
+			d["node"].position = Vector3(p_x + randf_range(-0.35, 0.35), 0.1, 0.3)
+			d["node"].scale = Vector3.ONE * 0.8
+			d["vel"] = Vector3(randf_range(-1, 1), randf_range(0.4, 1.0), randf_range(1, 3))
+			d["life"] = 0.45
+			(d["node"].material_override as StandardMaterial3D).albedo_color = Color(0.7, 0.66, 0.55, 0.6)
+			n += 1
+			if n >= 4:
+				break
+
 func _update_biome(dt: float) -> void:
 	biome_timer -= dt
 	if biome_timer <= 0.0:
@@ -605,6 +655,16 @@ func _update_effects(dt: float) -> void:
 			dm.albedo_color.a = clamp(d["life"] / 0.5, 0.0, 1.0) * 0.6
 			if d["life"] <= 0.0:
 				d["node"].visible = false
+
+	# Destroy sparks.
+	for s in sparks:
+		if s["node"].visible:
+			s["life"] -= dt
+			s["node"].position += s["vel"] * dt
+			s["vel"].y -= 13.0 * dt
+			s["node"].scale = Vector3.ONE * clamp(s["life"] / 0.5, 0.1, 1.0)
+			if s["life"] <= 0.0:
+				s["node"].visible = false
 
 func _build_environment() -> void:
 	var we := WorldEnvironment.new()
@@ -806,6 +866,20 @@ func _build_player() -> void:
 	_box(Vector3(0.18, 0.18, 1.1), Color(0.22, 0.22, 0.26), gun_model, Vector3(0, 0, -0.45))
 	_box(Vector3(0.26, 0.26, 0.3), Color(0.45, 0.16, 0.12), gun_model, Vector3(0, 0, 0.12))
 	gun_model.visible = false
+
+	# Jetpack flame (under the player, shown while flying).
+	jet_flame = Node3D.new()
+	player.add_child(jet_flame)
+	jet_flame.position = Vector3(0, 0.2, 0.15)
+	var fl := _box(Vector3(0.32, 0.7, 0.32), Color(1, 0.6, 0.1), jet_flame, Vector3(0, -0.35, 0))
+	var flm := StandardMaterial3D.new()
+	flm.albedo_color = Color(1, 0.6, 0.1, 0.85)
+	flm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	flm.emission_enabled = true
+	flm.emission = Color(1, 0.5, 0.05)
+	flm.emission_energy_multiplier = 4.0
+	fl.material_override = flm
+	jet_flame.visible = false
 
 	player.position = Vector3(p_x, 0, 0)
 
@@ -1057,13 +1131,13 @@ func _add_obstacle(lane: int, type: String) -> void:
 	var lx := _lane_x(lane)
 	match type:
 		"BARRIER":
-			# Construction barrier on A-frame legs with a glowing top bar — JUMP it.
-			_box(Vector3(0.14, 1.0, 0.5), Color(0.82, 0.82, 0.86), n, Vector3(-0.74, 0.5, 0))
-			_box(Vector3(0.14, 1.0, 0.5), Color(0.82, 0.82, 0.86), n, Vector3(0.74, 0.5, 0))
-			_box(Vector3(1.74, 0.42, 0.16), Color(0.95, 0.45, 0.1), n, Vector3(0, 0.8, 0.16))
-			for sx in [-0.6, -0.2, 0.2, 0.6]:
-				_box(Vector3(0.2, 0.44, 0.17), Color(0.95, 0.95, 0.96), n, Vector3(sx, 0.8, 0.17))
-			_box(Vector3(1.78, 0.1, 0.18), Color(1.0, 0.85, 0.2), n, Vector3(0, 1.03, 0.16)).material_override = _mat(Color(1.0, 0.85, 0.2), 1.4)
+			# A row of real traffic cones to hurdle — JUMP it.
+			if cone_scene != null:
+				for cx in [-0.55, 0.0, 0.55]:
+					var cm := _add_model(cone_scene, n, 0.9, "y", true)
+					cm.position.x = cx
+			else:
+				_box(Vector3(1.74, 0.42, 0.16), Color(0.95, 0.45, 0.1), n, Vector3(0, 0.55, 0))
 		"OVERHANG":
 			# Sign gantry with a low caution bar to duck under — SLIDE under it.
 			_box(Vector3(0.2, 2.8, 0.2), Color(0.5, 0.55, 0.6), n, Vector3(-0.96, 1.4, 0))
@@ -1153,6 +1227,7 @@ func _advance(dt: float) -> void:
 			o["resolved"] = true
 			if state == St.PLAYING and int(o["lane"]) == _round_lane():
 				if tank_t > 0.0:
+					_spark_burst(o["node"].global_position + Vector3(0, 0.8, 0))
 					o["node"].visible = false   # tank plows through
 					_play(sfx_crash)
 				elif _survives(o):
@@ -1207,7 +1282,7 @@ func _advance(dt: float) -> void:
 	powerups = keep_pu
 
 func _activate_powerup(type: String) -> void:
-	_play(sfx_coin)
+	_play(sfx_powerup)
 	match type:
 		"shield": shield_t = POWERUP_TIME
 		"magnet": magnet_t = POWERUP_TIME
@@ -1230,6 +1305,7 @@ func _gun_fire(dt: float) -> void:
 			target = o
 	if not target.is_empty():
 		target["resolved"] = true
+		_spark_burst(target["node"].global_position + Vector3(0, 0.8, 0))
 		target["node"].visible = false
 		_play(sfx_crash)
 		if gun_model != null:
@@ -1261,6 +1337,7 @@ func _step_player(dt: float) -> void:
 			p_vy += GRAVITY * dt
 			if p_y <= 0.0:
 				p_y = 0.0; p_vy = 0.0; jumping = false
+				_landing_puff()
 		elif p_y > 0.0:
 			p_y = lerp(p_y, 0.0, clamp(dt * 6.0, 0.0, 1.0))  # settle after jetpack ends
 	if sliding:
@@ -1292,6 +1369,10 @@ func _animate_player(dt: float) -> void:
 	if gun_model != null:
 		gun_model.visible = gun_t > 0.0
 		gun_model.scale = gun_model.scale.lerp(Vector3.ONE, clamp(dt * 8.0, 0.0, 1.0))
+	if jet_flame != null:
+		jet_flame.visible = jet_t > 0.0
+		if jet_flame.visible:
+			jet_flame.scale = Vector3(1.0, randf_range(0.7, 1.3), 1.0)   # flicker
 	if shield_bubble != null:
 		shield_bubble.visible = shield_t > 0.0 or jet_t > 0.0
 		if shield_bubble.visible:
@@ -1379,6 +1460,7 @@ func _game_over() -> void:
 	state = St.OVER
 	crash_flash = 1.0
 	_play(sfx_crash)
+	_play(sfx_gameover)
 	if score > high:
 		high = score
 		_save_high()
