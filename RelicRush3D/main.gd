@@ -87,6 +87,11 @@ var flash_rect: ColorRect
 
 var obstacles: Array = []      # [{node, type, lane, resolved}]
 var coin_nodes: Array = []     # [{node, lane, taken}]
+var powerups: Array = []       # [{node, lane, type, taken}]
+var shield_active := false
+var magnet_t := 0.0
+var mult_t := 0.0
+var shield_bubble: Node3D
 var dashes: Array = []
 var buildings: Array = []
 var build_timer := 0.0
@@ -107,6 +112,7 @@ var wB: Dictionary
 var w_blend := 1.0
 var w_timer := 0.0
 var w_transition := false
+var wdiff := 1.0          # weather difficulty multiplier (speed + spawn rate)
 
 # input
 var touch_start := Vector2.ZERO
@@ -333,7 +339,7 @@ func _update_props(dt: float) -> void:
 	var nf := _night_factor()
 	for s in streetlights:
 		if s["active"]:
-			s["node"].position.z += speed * dt
+			s["node"].position.z += _ws() * dt
 			if s["node"].position.z > 10.0:
 				s["active"] = false
 				s["node"].position = Vector3(0, 0, 200)
@@ -341,7 +347,7 @@ func _update_props(dt: float) -> void:
 		m.emission_enabled = nf > 0.15
 		m.emission = Color(1.0, 0.86, 0.55)
 		m.emission_energy_multiplier = nf * 4.0
-	light_timer -= speed * dt
+	light_timer -= _ws() * dt
 	if light_timer <= 0.0:
 		light_timer += 18.0
 		for side in [-1.0, 1.0]:
@@ -521,8 +527,14 @@ func _build_player() -> void:
 		(joints as MeshInstance3D).material_override = _mat(Color(0.16, 0.17, 0.2), 0.0, 0.1, 0.6)
 
 	var ap := runner_model.find_child("AnimationPlayer", true, false)
+	var skel := runner_model.find_child("Skeleton3D", true, false)
 	if ap != null:
 		runner_anim = ap as AnimationPlayer
+		# Ensure the animation's bone tracks resolve to THIS skeleton. Some FBX
+		# rigs nest the skeleton deeper than the track paths assume, which leaves
+		# the character frozen in its bind pose (legs not moving).
+		if skel != null and skel.get_parent() != null:
+			runner_anim.root_node = runner_anim.get_path_to(skel.get_parent())
 		var list := runner_anim.get_animation_list()
 		var chosen := ""
 		# Prefer a real locomotion clip (Mixamo names its clip "mixamo_com").
@@ -542,16 +554,27 @@ func _build_player() -> void:
 		if chosen != "":
 			var anim := runner_anim.get_animation(chosen)
 			anim.loop_mode = Animation.LOOP_LINEAR
-			# Lock root motion: zero the hips' horizontal translation so the
-			# character jogs in place instead of drifting forward/sideways.
+			# Lock root motion in place (non-destructive): route the hips
+			# position track through root motion so the legs still animate.
 			for ti in range(anim.get_track_count()):
 				if anim.track_get_type(ti) == Animation.TYPE_POSITION_3D \
 						and String(anim.track_get_path(ti)).to_lower().contains("hips"):
-					for ki in range(anim.track_get_key_count(ti)):
-						var v: Vector3 = anim.track_get_key_value(ti, ki)
-						anim.track_set_key_value(ti, ki, Vector3(0.0, v.y, 0.0))
+					runner_anim.root_motion_track = anim.track_get_path(ti)
 					break
 			runner_anim.play(chosen)
+
+	# Shield bubble (shown only while a shield power-up is active).
+	shield_bubble = Node3D.new()
+	player.add_child(shield_bubble)
+	var sb := _sph(0.95, Color(0.4, 0.7, 1.0), shield_bubble, Vector3(0, 0.95, 0))
+	var sbm := StandardMaterial3D.new()
+	sbm.albedo_color = Color(0.45, 0.72, 1.0, 0.22)
+	sbm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	sbm.emission_enabled = true
+	sbm.emission = Color(0.45, 0.72, 1.0)
+	sbm.emission_energy_multiplier = 0.7
+	sb.material_override = sbm
+	shield_bubble.visible = false
 
 	player.position = Vector3(p_x, 0, 0)
 
@@ -583,25 +606,25 @@ func _build_weathers() -> void:
 		 "fog": 0.004, "fog_c": Color(0.9,0.6,0.45), "precip": 0},
 		{"name": "Night", "top": Color(0.03,0.05,0.13), "hor": Color(0.12,0.16,0.3),
 		 "sun": Color(0.5,0.6,0.85), "sun_e": 0.28, "amb": 0.28, "night": 1.0,
-		 "fog": 0.0, "fog_c": Color(0.1,0.12,0.2), "precip": 0},
+		 "fog": 0.0, "fog_c": Color(0.1,0.12,0.2), "precip": 0, "diff": 1.06},
 		{"name": "Dawn", "top": Color(0.34,0.42,0.66), "hor": Color(1,0.82,0.7),
 		 "sun": Color(1,0.86,0.74), "sun_e": 0.9, "amb": 0.7, "night": 0.15,
 		 "fog": 0.006, "fog_c": Color(0.85,0.78,0.8), "precip": 0},
 		{"name": "Rain", "top": Color(0.22,0.25,0.3), "hor": Color(0.45,0.5,0.55),
 		 "sun": Color(0.7,0.74,0.8), "sun_e": 0.5, "amb": 0.5, "night": 0.4,
-		 "fog": 0.008, "fog_c": Color(0.45,0.5,0.55), "precip": 1},
+		 "fog": 0.008, "fog_c": Color(0.45,0.5,0.55), "precip": 1, "diff": 1.12},
 		{"name": "Snow", "top": Color(0.58,0.66,0.77), "hor": Color(0.88,0.91,0.95),
 		 "sun": Color(0.9,0.93,0.98), "sun_e": 0.8, "amb": 0.85, "night": 0.1,
-		 "fog": 0.007, "fog_c": Color(0.85,0.9,0.95), "precip": 2},
+		 "fog": 0.007, "fog_c": Color(0.85,0.9,0.95), "precip": 2, "diff": 1.12},
 		{"name": "Fog", "top": Color(0.59,0.6,0.62), "hor": Color(0.8,0.81,0.82),
 		 "sun": Color(0.85,0.85,0.85), "sun_e": 0.6, "amb": 0.7, "night": 0.15,
 		 "fog": 0.013, "fog_c": Color(0.8,0.81,0.82), "precip": 0},
 		{"name": "Thunderstorm", "top": Color(0.1,0.11,0.14), "hor": Color(0.2,0.22,0.26),
 		 "sun": Color(0.6,0.64,0.72), "sun_e": 0.3, "amb": 0.35, "night": 0.7,
-		 "fog": 0.016, "fog_c": Color(0.2,0.22,0.27), "precip": 1},
+		 "fog": 0.016, "fog_c": Color(0.2,0.22,0.27), "precip": 1, "diff": 1.28},
 		{"name": "Tornado", "top": Color(0.16,0.15,0.1), "hor": Color(0.32,0.3,0.2),
 		 "sun": Color(0.7,0.68,0.5), "sun_e": 0.4, "amb": 0.45, "night": 0.55,
-		 "fog": 0.02, "fog_c": Color(0.32,0.3,0.22), "precip": 1},
+		 "fog": 0.02, "fog_c": Color(0.32,0.3,0.22), "precip": 1, "diff": 1.42},
 	]
 
 func _randomize_weather() -> void:
@@ -647,6 +670,11 @@ func _apply_weather() -> void:
 	env.fog_enabled = fog > 0.0005
 	env.fog_density = fog
 	env.fog_light_color = wA["fog_c"].lerp(wB["fog_c"], t)
+	wdiff = lerp(float(wA.get("diff", 1.0)), float(wB.get("diff", 1.0)), t)
+
+func _ws() -> float:
+	# Effective world speed: base speed scaled by the current weather difficulty.
+	return speed * wdiff
 
 func _night_factor() -> float:
 	return _lf(wA["night"], wB["night"])
@@ -709,19 +737,21 @@ func _process(dt: float) -> void:
 func _update_playing(dt: float) -> void:
 	game_time += dt
 	speed = clamp(speed + ACCEL * dt, START_SPEED, MAX_SPEED)
+	if magnet_t > 0.0: magnet_t = max(0.0, magnet_t - dt)
+	if mult_t > 0.0: mult_t = max(0.0, mult_t - dt)
 	_step_player(dt)
-	dist_to_spawn -= speed * dt
+	dist_to_spawn -= _ws() * dt
 	if dist_to_spawn <= 0.0:
 		if game_time > GRACE:
 			_spawn_row()
 		dist_to_spawn += GAP_Z * randf_range(0.85, 1.45)
 	_advance(dt)
-	score += int(speed * dt * 6.0)
+	score += int(_ws() * dt * 6.0)
 
 func _update_demo(dt: float) -> void:
 	speed = 13.0
 	_step_player(dt)
-	demo_timer -= speed * dt
+	demo_timer -= _ws() * dt
 	if demo_timer <= 0.0:
 		var lane := _round_lane()
 		match demo_index % 3:
@@ -810,6 +840,20 @@ func _add_coin(lane: int) -> void:
 	n.position = Vector3(_lane_x(lane), 1.6, SPAWN_Z)   # float higher, above barriers
 	coin_nodes.append({"node": n, "lane": lane, "taken": false})
 
+func _add_powerup(lane: int, type: String) -> void:
+	var n := Node3D.new()
+	add_child(n)
+	var col := Color(0.45, 0.72, 1.0)      # shield = blue
+	if type == "magnet": col = Color(1.0, 0.45, 0.2)   # magnet = orange
+	elif type == "mult": col = Color(0.45, 1.0, 0.4)   # 2x = green
+	var core := _sph(0.42, col, n, Vector3.ZERO)
+	core.material_override = _mat(col, 1.4)
+	var ring := _cyl(0.6, 0.08, col, n, Vector3.ZERO)
+	ring.rotation_degrees = Vector3(90, 0, 0)
+	ring.material_override = _mat(col, 0.8)
+	n.position = Vector3(_lane_x(lane), 1.5, SPAWN_Z)
+	powerups.append({"node": n, "lane": lane, "type": type, "taken": false})
+
 func _spawn_row() -> void:
 	var roll := randf()
 	if roll < 0.45:
@@ -833,27 +877,48 @@ func _spawn_row() -> void:
 	for l in [0, 1]:
 		if not blocked.has(l):
 			free.append(l)
-	if free.size() > 0 and randf() < 0.85:
-		_add_coin(free[randi() % free.size()])
+	if free.size() > 0:
+		var lane: int = free[randi() % free.size()]
+		if randf() < 0.11:
+			_add_powerup(lane, ["shield", "magnet", "mult"][randi() % 3])
+		elif randf() < 0.85:
+			_add_coin(lane)
 
 func _advance(dt: float) -> void:
-	var move := speed * dt
+	var move := _ws() * dt
 	for o in obstacles:
 		o["node"].position.z += move
 		if not o["resolved"] and o["node"].position.z >= 0.0:
 			o["resolved"] = true
 			if state == St.PLAYING and int(o["lane"]) == _round_lane() and not _survives(o):
-				_game_over()
+				if shield_active:
+					shield_active = false      # shield absorbs one hit
+					crash_flash = 0.5
+					_play(sfx_crash)
+				else:
+					_game_over()
 	for c in coin_nodes:
 		c["node"].position.z += move
 		c["node"].rotate_y(dt * 4.0)
-		if not c["taken"] and c["node"].position.z >= 0.0 and int(c["lane"]) == _round_lane():
+		# Magnet pulls coins toward the player's lane.
+		if magnet_t > 0.0 and c["node"].position.z > -25.0:
+			c["node"].position.x = lerp(c["node"].position.x, p_x, clamp(dt * 4.0, 0.0, 1.0))
+		var grab: bool = int(c["lane"]) == _round_lane() or magnet_t > 0.0
+		if not c["taken"] and c["node"].position.z >= 0.0 and grab:
 			c["taken"] = true
 			c["node"].visible = false
 			if state == St.PLAYING:
 				coins += 1
-				score += COIN_VALUE
+				score += COIN_VALUE * (2 if mult_t > 0.0 else 1)
 				_play(sfx_coin)
+	for pu in powerups:
+		pu["node"].position.z += move
+		pu["node"].rotate_y(dt * 2.5)
+		if not pu["taken"] and pu["node"].position.z >= 0.0 and int(pu["lane"]) == _round_lane():
+			pu["taken"] = true
+			pu["node"].visible = false
+			if state == St.PLAYING:
+				_activate_powerup(pu["type"])
 	# cull
 	var keep_o := []
 	for o in obstacles:
@@ -869,6 +934,20 @@ func _advance(dt: float) -> void:
 		else:
 			keep_c.append(c)
 	coin_nodes = keep_c
+	var keep_pu := []
+	for pu in powerups:
+		if pu["node"].position.z > CULL_Z:
+			pu["node"].queue_free()
+		else:
+			keep_pu.append(pu)
+	powerups = keep_pu
+
+func _activate_powerup(type: String) -> void:
+	_play(sfx_coin)
+	match type:
+		"shield": shield_active = true
+		"magnet": magnet_t = 7.0
+		"mult": mult_t = 8.0
 
 func _survives(o: Dictionary) -> bool:
 	match o["type"]:
@@ -905,31 +984,35 @@ func _animate_player(dt: float) -> void:
 	# Gentle camera follow keeps the runner near centre while still reading lanes.
 	cam.position.x = lerp(cam.position.x, p_x * 0.4, clamp(dt * 6.0, 0.0, 1.0))
 	if runner_anim != null:
-		runner_anim.speed_scale = clamp(speed / 11.0, 0.7, 2.2)
+		runner_anim.speed_scale = clamp(_ws() / 11.0, 0.7, 2.6)
 	if runner_model != null:
 		var target_sy: float = 0.5 if sliding else 1.0
 		runner_model.scale.y = lerp(runner_model.scale.y, target_sy, clamp(dt * 14.0, 0.0, 1.0))
+	if shield_bubble != null:
+		shield_bubble.visible = shield_active
+		if shield_active:
+			shield_bubble.rotation.y += dt * 2.0
 
 
 # ==============================================================================
 #  Scenery
 # ==============================================================================
 func _scroll_dashes(dt: float) -> void:
-	var move := speed * dt
+	var move := _ws() * dt
 	for d in dashes:
 		d.position.z += move
 		if d.position.z > CULL_Z:
 			d.position.z -= dashes.size() * 4.0
 
 func _update_buildings(dt: float) -> void:
-	var move := speed * dt
+	var move := _ws() * dt
 	for b in buildings:
 		if b["active"]:
 			b["node"].position.z += move
 			if b["node"].position.z > 10.0:
 				b["active"] = false
 				b["node"].position = Vector3(0, 0, 200)
-	build_timer -= speed * dt
+	build_timer -= _ws() * dt
 	if build_timer <= 0.0:
 		build_timer = randf_range(5.0, 9.0)
 		for side in [-1.0, 1.0]:
@@ -969,8 +1052,12 @@ func _start_game() -> void:
 		o["node"].queue_free()
 	for c in coin_nodes:
 		c["node"].queue_free()
+	for pu in powerups:
+		pu["node"].queue_free()
 	obstacles.clear()
 	coin_nodes.clear()
+	powerups.clear()
+	shield_active = false; magnet_t = 0.0; mult_t = 0.0
 	p_lane = 0; p_x = -LANE_X; p_y = 0.0; p_vy = 0.0
 	jumping = false; sliding = false
 	speed = START_SPEED
@@ -1109,7 +1196,7 @@ func _refresh_ui() -> void:
 			ui_info.text = "Best %d  •  %s" % [high, _weather_name()]
 			ui_center.text = ""
 			ui_sub.text = ""
-			ui_caption.text = ""
+			ui_caption.text = _powerup_text()
 			ui_tut.text = _tutorial_text()
 		St.OVER:
 			ui_caption.text = ""
@@ -1130,6 +1217,16 @@ func _tutorial_text() -> String:
 	elif game_time < 9.0:
 		return "▼  Swipe down to SLIDE"
 	return "Grab coins • dodge cars • survive!"
+
+func _powerup_text() -> String:
+	var t := ""
+	if shield_active:
+		t += "[ SHIELD ]  "
+	if magnet_t > 0.0:
+		t += "[ MAGNET %d ]  " % int(ceil(magnet_t))
+	if mult_t > 0.0:
+		t += "[ 2X %d ]" % int(ceil(mult_t))
+	return t
 
 
 # ==============================================================================
