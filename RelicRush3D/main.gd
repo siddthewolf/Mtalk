@@ -512,23 +512,13 @@ func _build_player() -> void:
 	runner_model = _add_model(runner_scene, player, 1.45, "y", true)
 	runner_model.rotation_degrees = Vector3(0, 180, 0)   # face away from the camera
 
-	var jacket := _flat(Color(0.86, 0.16, 0.16))
-	var legs := _flat(Color(0.17, 0.19, 0.25))
-	for pn in ["torso", "arm-left", "arm-right"]:
-		var m := runner_model.find_child(pn, true, false)
-		if m is MeshInstance3D:
-			(m as MeshInstance3D).material_override = jacket
-	for pn in ["leg-left", "leg-right"]:
-		var m := runner_model.find_child(pn, true, false)
-		if m is MeshInstance3D:
-			(m as MeshInstance3D).material_override = legs
-
-	# Long brown hair, parented to the head so it follows the animation.
-	var head := runner_model.find_child("head", true, false)
-	if head is MeshInstance3D:
-		var hair_c := Color(0.3, 0.19, 0.11)
-		_box(Vector3(0.58, 0.2, 0.58), hair_c, head, Vector3(0, 0.26, 0)).material_override = _flat(hair_c)
-		_box(Vector3(0.5, 0.55, 0.16), hair_c, head, Vector3(0, 0.02, -0.27)).material_override = _flat(hair_c)
+	# Tint the mannequin into a red-hoodie stand-in (shaded so it catches light).
+	var surf := runner_model.find_child("Beta_Surface", true, false)
+	if surf is MeshInstance3D:
+		(surf as MeshInstance3D).material_override = _mat(Color(0.82, 0.15, 0.15), 0.0, 0.0, 0.7)
+	var joints := runner_model.find_child("Beta_Joints", true, false)
+	if joints is MeshInstance3D:
+		(joints as MeshInstance3D).material_override = _mat(Color(0.16, 0.17, 0.2), 0.0, 0.1, 0.6)
 
 	var ap := runner_model.find_child("AnimationPlayer", true, false)
 	if ap != null:
@@ -550,7 +540,17 @@ func _build_player() -> void:
 		if chosen == "" and list.size() > 0:
 			chosen = list[0]
 		if chosen != "":
-			runner_anim.get_animation(chosen).loop_mode = Animation.LOOP_LINEAR
+			var anim := runner_anim.get_animation(chosen)
+			anim.loop_mode = Animation.LOOP_LINEAR
+			# Lock root motion: zero the hips' horizontal translation so the
+			# character jogs in place instead of drifting forward/sideways.
+			for ti in range(anim.get_track_count()):
+				if anim.track_get_type(ti) == Animation.TYPE_POSITION_3D \
+						and String(anim.track_get_path(ti)).to_lower().contains("hips"):
+					for ki in range(anim.track_get_key_count(ti)):
+						var v: Vector3 = anim.track_get_key_value(ti, ki)
+						anim.track_set_key_value(ti, ki, Vector3(0.0, v.y, 0.0))
+					break
 			runner_anim.play(chosen)
 
 	player.position = Vector3(p_x, 0, 0)
@@ -807,7 +807,7 @@ func _add_coin(lane: int) -> void:
 	var c := _cyl(0.45, 0.12, Color(0.98, 0.78, 0.2), n, Vector3.ZERO)
 	c.rotation_degrees = Vector3(90, 0, 0)
 	c.material_override = _mat(Color(0.98, 0.78, 0.2), 0.6)
-	n.position = Vector3(_lane_x(lane), 1.1, SPAWN_Z)
+	n.position = Vector3(_lane_x(lane), 1.6, SPAWN_Z)   # float higher, above barriers
 	coin_nodes.append({"node": n, "lane": lane, "taken": false})
 
 func _spawn_row() -> void:
