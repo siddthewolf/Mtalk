@@ -81,6 +81,7 @@ var sfx_crash: AudioStreamPlayer
 var sfx_thunder: AudioStreamPlayer
 var sfx_powerup: AudioStreamPlayer
 var sfx_gameover: AudioStreamPlayer
+var music: AudioStreamPlayer
 
 # Storm / tornado / lightning
 var lightning_flash := 0.0
@@ -411,6 +412,10 @@ func _build_audio() -> void:
 	sfx_thunder.pitch_scale = 0.45   # lower/longer -> thunder rumble
 	sfx_powerup = _audio("res://assets/sfx/powerup.ogg", -4.0)
 	sfx_gameover = _audio("res://assets/sfx/gameover.ogg", -3.0)
+	# Seamless ambient background-music loop (original CC0 composition).
+	music = _audio("res://assets/sfx/music_loop.wav", -16.0)
+	if music.stream != null:
+		music.play()
 
 func _play(p: AudioStreamPlayer) -> void:
 	if p != null and p.stream != null:
