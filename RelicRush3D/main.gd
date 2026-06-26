@@ -15,11 +15,11 @@ const MAX_SPEED := 20.0       # lower top speed -> more reaction time
 const ACCEL := 0.30           # slower ramp
 const GRACE := 3.0
 const TUTORIAL_TIME := 10.0
-const GAP_Z := 16.0           # more spacing between obstacle rows
-const JUMP_VELOCITY := 7.8
-const GRAVITY := -16.0        # a touch more air time
-const JUMP_CLEAR := 0.7
-const SLIDE_TIME := 0.75
+const GAP_Z := 22.0           # more spacing so the next obstacle isn't on top of you
+const JUMP_VELOCITY := 6.6    # snappier hop
+const GRAVITY := -22.0        # short, controlled air time (~0.6 s)
+const JUMP_CLEAR := 0.6
+const SLIDE_TIME := 0.7
 const WEATHER_FADE := 5.0
 const COIN_VALUE := 10
 const SAVE_PATH := "user://relicrush.save"
@@ -51,7 +51,7 @@ var slide_t := 0.0
 var cam: Camera3D
 var sun: DirectionalLight3D
 var env: Environment
-var sky_mat: ProceduralSkyMaterial
+var sky_mat: PanoramaSkyMaterial
 var player: Node3D
 var upper: Node3D          # upper-body group (leans forward when sliding)
 var arm_l_piv: Node3D
@@ -276,16 +276,15 @@ func _build_environment() -> void:
 	env = Environment.new()
 	env.background_mode = Environment.BG_SKY
 	var sky := Sky.new()
-	sky_mat = ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = Color(0.29, 0.52, 0.81)
-	sky_mat.sky_horizon_color = Color(0.8, 0.86, 0.88)
-	sky_mat.ground_horizon_color = Color(0.8, 0.86, 0.88)
-	sky_mat.ground_bottom_color = Color(0.4, 0.45, 0.4)
+	# Realistic CC0 HDRI sky (Poly Haven) for image-based lighting + reflections.
+	sky_mat = PanoramaSkyMaterial.new()
+	sky_mat.panorama = load("res://assets/env/sky.hdr")
 	sky.sky_material = sky_mat
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	env.ambient_light_energy = 1.0
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
+	env.tonemap_exposure = 0.95
 	# Bloom makes coins, headlights and lit windows glow for a richer look.
 	env.glow_enabled = true
 	env.glow_intensity = 0.7
@@ -305,9 +304,11 @@ func _build_environment() -> void:
 
 func _build_camera() -> void:
 	cam = Camera3D.new()
-	cam.fov = 64.0
-	cam.position = Vector3(0, 3.1, 6.2)
-	cam.look_at_from_position(cam.position, Vector3(0, 0.7, -15), Vector3.UP)
+	cam.fov = 66.0
+	cam.position = Vector3(0, 4.1, 6.9)
+	# Higher vantage that looks further down the street so you can read the
+	# next obstacle in advance.
+	cam.look_at_from_position(cam.position, Vector3(0, 1.0, -24), Vector3.UP)
 	add_child(cam)
 
 func _build_ground() -> void:
@@ -472,12 +473,12 @@ func _lf(a: float, b: float) -> float:
 
 func _apply_weather() -> void:
 	var t := w_blend
-	sky_mat.sky_top_color = wA["top"].lerp(wB["top"], t)
-	sky_mat.sky_horizon_color = wA["hor"].lerp(wB["hor"], t)
-	sky_mat.ground_horizon_color = sky_mat.sky_horizon_color
+	# HDRI sky stays; day/night comes from dimming the sky + sun + ambient.
+	var nf: float = _night_factor()
+	sky_mat.energy_multiplier = lerp(1.0, 0.12, nf)
 	sun.light_color = wA["sun"].lerp(wB["sun"], t)
 	sun.light_energy = _lf(wA["sun_e"], wB["sun_e"])
-	env.ambient_light_energy = _lf(wA["amb"], wB["amb"])
+	env.ambient_light_energy = _lf(wA["amb"], wB["amb"]) * lerp(1.0, 0.4, nf)
 	var fog: float = _lf(wA["fog"], wB["fog"])
 	env.fog_enabled = fog > 0.0005
 	env.fog_density = fog
