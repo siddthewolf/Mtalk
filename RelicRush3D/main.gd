@@ -165,9 +165,19 @@ func _ready() -> void:
 	_build_audio()
 	_build_ui()
 	_randomize_weather()
+	_setup_quality()
 	demo_caption = "Watch the demo…"
 	if "--shots" in OS.get_cmdline_args():
 		_run_shots()
+
+func _setup_quality() -> void:
+	# Anti-aliasing for clean edges (mobile-friendly) + a touch of sharpening.
+	var vp := get_viewport()
+	vp.msaa_3d = Viewport.MSAA_2X
+	vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
+	vp.use_debanding = true
+	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
+	vp.scaling_3d_scale = 1.0
 
 func _run_shots() -> void:
 	# Debug: capture a few frames to res://shots/ then quit (for development).
@@ -556,22 +566,35 @@ func _build_environment() -> void:
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	env.ambient_light_energy = 1.0
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
-	env.tonemap_exposure = 0.95
-	# Bloom makes coins, headlights and lit windows glow for a richer look.
+	env.tonemap_exposure = 1.0
+	env.tonemap_white = 1.1
+	# Bloom makes coins, headlights, lit windows and power-ups glow.
 	env.glow_enabled = true
-	env.glow_intensity = 0.7
-	env.glow_bloom = 0.15
-	env.glow_hdr_threshold = 1.0
+	env.glow_intensity = 0.95
+	env.glow_strength = 1.15
+	env.glow_bloom = 0.28
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SCREEN
+	env.glow_hdr_threshold = 0.9
+	# Colour grading for a punchier, more vivid look.
+	env.adjustment_enabled = true
+	env.adjustment_brightness = 1.03
+	env.adjustment_contrast = 1.12
+	env.adjustment_saturation = 1.22
+	# Subtle distance fog for depth (kept light so the view stays clear).
+	env.fog_enabled = true
+	env.fog_density = 0.004
+	env.fog_aerial_perspective = 0.4
 	we.environment = env
 	add_child(we)
 
 	sun = DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-52, -38, 0)
-	sun.light_energy = 1.35
-	sun.light_color = Color(1.0, 0.97, 0.9)
+	sun.light_energy = 1.4
+	sun.light_color = Color(1.0, 0.96, 0.88)
 	sun.shadow_enabled = true
 	sun.shadow_blur = 1.0
-	sun.directional_shadow_max_distance = 45.0   # shadows only near camera -> faster
+	sun.directional_shadow_max_distance = 48.0   # crisp shadows only near camera
+	sun.shadow_normal_bias = 1.5
 	add_child(sun)
 
 func _build_camera() -> void:
