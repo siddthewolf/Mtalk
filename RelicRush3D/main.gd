@@ -61,6 +61,13 @@ var leg_r_piv: Node3D
 var scarf: Node3D
 var board: Node3D
 
+# Imported CC0 models (Kenney)
+var runner_scene: PackedScene
+var runner_model: Node3D
+var runner_anim: AnimationPlayer
+var car_scenes: Array = []
+var building_scenes: Array = []
+
 var obstacles: Array = []      # [{node, type, lane, resolved}]
 var coin_nodes: Array = []     # [{node, lane, taken}]
 var dashes: Array = []
@@ -103,6 +110,7 @@ func _ready() -> void:
 	_build_weathers()
 	_build_environment()
 	_build_camera()
+	_load_assets()
 	_build_ground()
 	_build_player()
 	_build_weather_particles()
@@ -179,6 +187,51 @@ func _prism(size: Vector3, col: Color, parent: Node3D, pos := Vector3.ZERO) -> M
 	parent.add_child(mi)
 	return mi
 
+func _load_assets() -> void:
+	runner_scene = load("res://assets/char/runner.glb")
+	for n in ["sedan", "suv", "taxi", "van", "police", "hatchback-sports"]:
+		var s = load("res://assets/car/car-%s.glb" % n)
+		if s != null:
+			car_scenes.append(s)
+	for c in ["a", "b", "c", "d", "e", "f", "g", "h"]:
+		var s = load("res://assets/city/building-%s.glb" % c)
+		if s != null:
+			building_scenes.append(s)
+
+## Combined AABB of every VisualInstance3D under [root], expressed in [ref] space.
+func _merged_aabb(ref: Node3D, root: Node3D) -> AABB:
+	var result := AABB()
+	var started := false
+	for vi in root.find_children("*", "VisualInstance3D", true, false):
+		var v := vi as VisualInstance3D
+		var rel: Transform3D = ref.global_transform.affine_inverse() * v.global_transform
+		var a: AABB = rel * v.get_aabb()
+		if not started:
+			result = a
+			started = true
+		else:
+			result = result.merge(a)
+	return result
+
+## Instance [scene], auto-scale it to [target] along [fit_axis] ("x" or "y"),
+## centre it on X/Z and (optionally) sit it on the ground. Returns a wrapper.
+func _add_model(scene: PackedScene, parent: Node3D, target: float, fit_axis: String, ground := true) -> Node3D:
+	var wrap := Node3D.new()
+	parent.add_child(wrap)
+	if scene == null:
+		return wrap
+	var inst := scene.instantiate()
+	wrap.add_child(inst)
+	var box := _merged_aabb(wrap, inst as Node3D)
+	var size := box.size
+	if size.y < 0.0001 and size.x < 0.0001:
+		return wrap
+	var s: float = (target / max(size.x, 0.001)) if fit_axis == "x" else (target / max(size.y, 0.001))
+	(inst as Node3D).scale = Vector3(s, s, s)
+	var oy: float = -box.position.y * s if ground else -(box.position.y + size.y * 0.5) * s
+	(inst as Node3D).position = Vector3(-(box.position.x + size.x * 0.5) * s, oy, -(box.position.z + size.z * 0.5) * s)
+	return wrap
+
 func _build_environment() -> void:
 	var we := WorldEnvironment.new()
 	env = Environment.new()
@@ -252,81 +305,42 @@ func _build_ground() -> void:
 func _make_building() -> Node3D:
 	var b := Node3D.new()
 	add_child(b)
-	var w := randf_range(3.0, 5.0)
-	var h := randf_range(8.0, 26.0)
-	var depth := randf_range(3.0, 6.0)
-	var base := _box(Vector3(w, h, depth), Color(0.42, 0.45, 0.5), b, Vector3(0, h * 0.5, 0))
-	base.set_meta("h", h)
-	# Window grid as a single emissive front panel that lights up at night.
-	var win := _box(Vector3(w * 0.92, h * 0.92, 0.1), Color(0.16, 0.18, 0.24), b, Vector3(0, h * 0.5, depth * 0.5 + 0.06))
-	win.set_meta("win", true)
-	b.set_meta("h", h)
-	b.set_meta("win", win)
+	if building_scenes.is_empty():
+		_box(Vector3(4, 14, 4), Color(0.42, 0.45, 0.5), b, Vector3(0, 7, 0))
+	else:
+		var scene: PackedScene = building_scenes[randi() % building_scenes.size()]
+		_add_model(scene, b, randf_range(11.0, 22.0), "y", true)
 	return b
 
 func _build_player() -> void:
-	# An ORIGINAL anime-style ninja runner (not based on any existing character):
-	# spiky hair, a blank steel headband and a trailing scarf. Built smaller and
-	# more defined than the first blockout, with rounded capsule/sphere limbs and
-	# pivots so the limbs swing naturally.
 	player = Node3D.new()
 	add_child(player)
-	var skin := Color(0.96, 0.82, 0.66)
-	var outfit := Color(0.16, 0.18, 0.24)     # charcoal-navy gi
-	var sleeve := Color(0.24, 0.26, 0.32)
-	var pants := Color(0.13, 0.14, 0.17)
-	var crimson := Color(0.78, 0.16, 0.2)     # scarf / accent
-	var hair_c := Color(0.09, 0.09, 0.15)
-	var steel := Color(0.62, 0.64, 0.7)
 
-	# Skateboard.
+	# Skateboard (kept procedural — the kit has no board).
 	board = Node3D.new(); player.add_child(board); board.position = Vector3(0, 0.1, 0)
-	_box(Vector3(0.8, 0.08, 0.3), Color(0.22, 0.76, 0.84), board, Vector3(0, 0, 0))
-	_box(Vector3(0.8, 0.04, 0.3), Color(0.12, 0.5, 0.6), board, Vector3(0, -0.04, 0))
-	for zx in [-0.28, 0.28]:
-		var w := _cyl(0.1, 0.08, Color(0.95, 0.92, 0.85), board, Vector3(zx, -0.07, 0.0))
-		w.rotation_degrees = Vector3(0, 0, 90)
+	_box(Vector3(0.95, 0.09, 0.34), Color(0.22, 0.76, 0.84), board, Vector3(0, 0, 0))
+	_box(Vector3(0.95, 0.05, 0.34), Color(0.12, 0.5, 0.6), board, Vector3(0, -0.05, 0))
+	for zx in [-0.32, 0.32]:
+		_cyl(0.11, 0.08, Color(0.95, 0.92, 0.85), board, Vector3(zx, -0.08, 0.0)).rotation_degrees = Vector3(0, 0, 90)
 
-	# Legs (pivot at the hips so they swing).
-	leg_l_piv = Node3D.new(); player.add_child(leg_l_piv); leg_l_piv.position = Vector3(-0.13, 0.6, 0)
-	_cap(0.1, 0.46, pants, leg_l_piv, Vector3(0, -0.26, 0))
-	_box(Vector3(0.16, 0.08, 0.3), Color(0.1, 0.1, 0.12), leg_l_piv, Vector3(0, -0.5, 0.06))
-	leg_r_piv = Node3D.new(); player.add_child(leg_r_piv); leg_r_piv.position = Vector3(0.13, 0.6, 0)
-	_cap(0.1, 0.46, pants, leg_r_piv, Vector3(0, -0.26, 0))
-	_box(Vector3(0.16, 0.08, 0.3), Color(0.1, 0.1, 0.12), leg_r_piv, Vector3(0, -0.5, 0.06))
-
-	# Upper body group — pivots at the hip so it can lean for sliding.
-	upper = Node3D.new(); player.add_child(upper); upper.position = Vector3(0, 0.6, 0)
-	_cap(0.24, 0.5, outfit, upper, Vector3(0, 0.34, 0))                       # torso
-	_box(Vector3(0.5, 0.1, 0.36), crimson, upper, Vector3(0, 0.18, 0))        # belt/sash
-
-	# Arms (pivots at shoulders).
-	arm_l_piv = Node3D.new(); upper.add_child(arm_l_piv); arm_l_piv.position = Vector3(-0.28, 0.52, 0)
-	_cap(0.08, 0.42, sleeve, arm_l_piv, Vector3(0, -0.2, 0))
-	_sph(0.09, skin, arm_l_piv, Vector3(0, -0.42, 0))
-	arm_r_piv = Node3D.new(); upper.add_child(arm_r_piv); arm_r_piv.position = Vector3(0.28, 0.52, 0)
-	_cap(0.08, 0.42, sleeve, arm_r_piv, Vector3(0, -0.2, 0))
-	_sph(0.09, skin, arm_r_piv, Vector3(0, -0.42, 0))
-
-	# Head + face.
-	_sph(0.23, skin, upper, Vector3(0, 0.86, 0))
-	_box(Vector3(0.06, 0.06, 0.02), Color(0.1, 0.1, 0.12), upper, Vector3(-0.09, 0.88, 0.21))  # eyes
-	_box(Vector3(0.06, 0.06, 0.02), Color(0.1, 0.1, 0.12), upper, Vector3(0.09, 0.88, 0.21))
-
-	# Spiky hair (several prisms fanning up and back).
-	for a in [-0.28, -0.1, 0.1, 0.28]:
-		var spike := _prism(Vector3(0.16, 0.3, 0.14), hair_c, upper, Vector3(a, 1.04, -0.04))
-		spike.rotation_degrees = Vector3(-18, 0, a * 30.0)
-	_prism(Vector3(0.18, 0.26, 0.16), hair_c, upper, Vector3(0, 1.0, -0.12)).rotation_degrees = Vector3(-40, 0, 0)
-
-	# Steel headband with a blank plate (no symbol — original).
-	_box(Vector3(0.5, 0.1, 0.5), steel, upper, Vector3(0, 0.96, 0)).material_override = _mat(steel, 0.0, 0.6, 0.35)
-	_box(Vector3(0.2, 0.12, 0.03), Color(0.8, 0.82, 0.86), upper, Vector3(0, 0.96, 0.23)).material_override = _mat(Color(0.8, 0.82, 0.86), 0.0, 0.8, 0.25)
-
-	# Trailing scarf.
-	scarf = Node3D.new(); upper.add_child(scarf); scarf.position = Vector3(0, 0.62, -0.05)
-	_box(Vector3(0.42, 0.16, 0.34), crimson, scarf, Vector3(0, 0, 0))
-	_prism(Vector3(0.2, 0.7, 0.12), crimson, scarf, Vector3(-0.1, -0.1, -0.3)).rotation_degrees = Vector3(110, 0, 0)
+	# Animated CC0 character (Kenney) riding the board.
+	runner_model = _add_model(runner_scene, player, 1.5, "y", true)
+	runner_model.position.y = 0.16
+	runner_model.rotation_degrees = Vector3(0, 180, 0)   # face away from the camera
+	var ap := runner_model.find_child("AnimationPlayer", true, false)
+	if ap != null:
+		runner_anim = ap as AnimationPlayer
+		var chosen := ""
+		for a in runner_anim.get_animation_list():
+			var an := String(a).to_lower()
+			if an.ends_with("sprint") or an.ends_with("run"):
+				chosen = a
+				break
+			if chosen == "" and an.ends_with("walk"):
+				chosen = a
+		if chosen != "":
+			runner_anim.get_animation(chosen).loop_mode = Animation.LOOP_LINEAR
+			runner_anim.play(chosen)
 
 	player.position = Vector3(p_x, 0, 0)
 
@@ -561,27 +575,12 @@ func _add_obstacle(lane: int, type: String) -> void:
 	obstacles.append({"node": n, "type": type, "lane": lane, "resolved": false})
 
 func _make_car(parent: Node3D) -> void:
-	var col: Color = [Color(0.85,0.18,0.18), Color(0.16,0.38,0.85), Color(0.95,0.78,0.18), Color(0.16,0.7,0.42)][randi() % 4]
-	# Lower body + skirt.
-	_box(Vector3(1.8, 0.6, 3.7), col, parent, Vector3(0, 0.62, 0))
-	_box(Vector3(1.8, 0.32, 3.7), col.darkened(0.35), parent, Vector3(0, 0.34, 0))
-	# Cabin + glass wrap.
-	_box(Vector3(1.55, 0.55, 1.9), col, parent, Vector3(0, 1.1, -0.1))
-	var glass := Color(0.55, 0.75, 0.92)
-	_box(Vector3(1.4, 0.42, 0.08), glass, parent, Vector3(0, 1.12, 0.83))     # rear window
-	_box(Vector3(0.08, 0.42, 1.7), glass, parent, Vector3(-0.76, 1.12, -0.1)) # left
-	_box(Vector3(0.08, 0.42, 1.7), glass, parent, Vector3(0.76, 1.12, -0.1))  # right
-	_box(Vector3(1.7, 0.06, 1.9), col.lightened(0.15), parent, Vector3(0, 1.4, -0.1)) # roof
-	# Glowing tail lights + bumper.
-	for tx in [-0.6, 0.6]:
-		_box(Vector3(0.36, 0.16, 0.08), Color(1, 0.22, 0.18), parent, Vector3(tx, 0.66, 1.86)).material_override = _mat(Color(1, 0.25, 0.2), 1.6)
-	_box(Vector3(1.82, 0.18, 0.12), Color(0.12, 0.12, 0.14), parent, Vector3(0, 0.42, 1.86))
-	# Wheels with hubcaps.
-	for zx in [-0.88, 0.88]:
-		for zz in [-1.2, 1.2]:
-			var w := _cyl(0.36, 0.26, Color(0.06,0.06,0.07), parent, Vector3(zx, 0.36, zz))
-			w.rotation_degrees = Vector3(0, 0, 90)
-			_cyl(0.16, 0.28, Color(0.7,0.72,0.76), parent, Vector3(zx, 0.36, zz)).rotation_degrees = Vector3(0, 0, 90)
+	if car_scenes.is_empty():
+		_box(Vector3(1.8, 0.9, 3.4), Color(0.82, 0.2, 0.2), parent, Vector3(0, 0.6, 0))
+		return
+	var scene: PackedScene = car_scenes[randi() % car_scenes.size()]
+	var m := _add_model(scene, parent, 1.9, "x", true)   # fit to ~lane width
+	m.rotation_degrees = Vector3(0, 180, 0)              # rear toward the camera
 
 func _add_coin(lane: int) -> void:
 	var n := Node3D.new()
@@ -680,31 +679,14 @@ func _step_player(dt: float) -> void:
 	player.position.y = p_y
 
 func _animate_player(dt: float) -> void:
-	# Lean into turns; swing limbs; crouch when sliding; flow the scarf.
+	# Lean into turns; sync the run animation to speed; squash low when sliding.
 	var lean: float = clamp((_lane_x(p_lane) - p_x) * 0.6, -0.5, 0.5)
 	player.rotation.z = -lean
-	var swing: float = sin(run_cycle) * 0.7
-	scarf.rotation.x = -0.4 - 0.2 * sin(run_cycle * 0.7) - clamp(speed * 0.02, 0.0, 0.7)
-	if sliding:
-		upper.rotation.x = -1.1
-		upper.position.y = 0.42
-		leg_l_piv.rotation.x = 1.3
-		leg_r_piv.rotation.x = 0.9
-		arm_l_piv.rotation.x = 1.3
-		arm_r_piv.rotation.x = 1.3
-	else:
-		upper.rotation.x = lerp(upper.rotation.x, -0.06, clamp(dt * 12.0, 0.0, 1.0))
-		upper.position.y = 0.6
-		if not jumping:
-			leg_l_piv.rotation.x = swing
-			leg_r_piv.rotation.x = -swing
-			arm_l_piv.rotation.x = -swing * 0.8
-			arm_r_piv.rotation.x = swing * 0.8
-		else:
-			leg_l_piv.rotation.x = 0.6
-			leg_r_piv.rotation.x = 0.7
-			arm_l_piv.rotation.x = -1.2
-			arm_r_piv.rotation.x = -1.2
+	if runner_anim != null:
+		runner_anim.speed_scale = clamp(speed / 11.0, 0.7, 2.2)
+	if runner_model != null:
+		var target_sy: float = 0.5 if sliding else 1.0
+		runner_model.scale.y = lerp(runner_model.scale.y, target_sy, clamp(dt * 14.0, 0.0, 1.0))
 
 
 # ==============================================================================
@@ -734,6 +716,7 @@ func _update_buildings(dt: float) -> void:
 				slot["active"] = true
 				var off := randf_range(5.5, 9.0)
 				slot["node"].position = Vector3(side * (LANE_X + off), 0, SPAWN_Z - randf_range(0, 6))
+				slot["node"].rotation_degrees = Vector3(0, 90.0 if side < 0 else -90.0, 0)
 
 func _free_building():
 	for b in buildings:
@@ -742,8 +725,11 @@ func _free_building():
 	return null
 
 func _light_windows() -> void:
+	# Procedural-building fallback only; Kenney buildings carry baked window art.
 	var nf := _night_factor()
 	for b in buildings:
+		if not b["node"].has_meta("win"):
+			continue
 		var win: MeshInstance3D = b["node"].get_meta("win")
 		if win:
 			var mat: StandardMaterial3D = win.material_override
