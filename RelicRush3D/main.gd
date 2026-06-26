@@ -100,6 +100,7 @@ var jet_t := 0.0
 var tank_t := 0.0
 var gun_t := 0.0
 var gun_timer := 0.0
+var powerup_cd := 0.0     # min spacing between power-ups (no back-to-back)
 var highlight_t := 0.0       # cinematic camera highlight on pickup
 var shield_bubble: Node3D
 var tank_model: Node3D
@@ -115,6 +116,9 @@ var surround_mi: MeshInstance3D
 var tree_scenes: Array = []
 var palm_scenes: Array = []
 var desert_scenes: Array = []
+var scatter_lib := {}          # name -> PackedScene of small ground props
+var scatter_pool: Array = []   # dense small props near the road
+var scatter_timer := 0.0
 var water_plane: Node3D
 var debris: Array = []          # tornado flying debris [{node, vel, spin}]
 var debris_timer := 0.0
@@ -333,14 +337,28 @@ func _load_assets() -> void:
 	for n in ["cactus_tall", "cactus_short", "rock_tallE"]:   # narrow props only
 		var s = load("res://assets/nature/%s.glb" % n)
 		if s != null: desert_scenes.append(s)
+	for n in ["grass", "grass_large", "flower_redA", "flower_yellowA", "rock_smallA", "rock_smallC", "plant_bushDetailed", "mushroom_red", "cactus_short"]:
+		var s = load("res://assets/nature/%s.glb" % n)
+		if s != null: scatter_lib[n] = s
 	_build_biomes()
+
+func _scat(names: Array) -> Array:
+	var a := []
+	for n in names:
+		if scatter_lib.has(n):
+			a.append(scatter_lib[n])
+	return a
 
 func _build_biomes() -> void:
 	biomes = [
-		{"name": "City", "props": building_scenes, "ground": "concrete", "h": Vector2(6, 10), "off": Vector2(13, 20)},
-		{"name": "Forest", "props": tree_scenes, "ground": "grass", "h": Vector2(5, 9), "off": Vector2(6, 12)},
-		{"name": "Beach", "props": palm_scenes, "ground": "sand", "h": Vector2(5, 8), "off": Vector2(6, 11)},
-		{"name": "Desert", "props": desert_scenes, "ground": "sand", "h": Vector2(3, 5), "off": Vector2(9, 16)},
+		{"name": "City", "props": building_scenes, "ground": "concrete", "h": Vector2(6, 10), "off": Vector2(13, 20),
+		 "scatter": _scat(["plant_bushDetailed", "rock_smallA", "grass"])},
+		{"name": "Forest", "props": tree_scenes, "ground": "grass", "h": Vector2(5, 9), "off": Vector2(6, 12),
+		 "scatter": _scat(["grass", "grass_large", "flower_redA", "flower_yellowA", "plant_bushDetailed", "mushroom_red", "rock_smallA"])},
+		{"name": "Beach", "props": palm_scenes, "ground": "sand", "h": Vector2(5, 8), "off": Vector2(6, 11),
+		 "scatter": _scat(["grass", "rock_smallA", "rock_smallC"])},
+		{"name": "Desert", "props": desert_scenes, "ground": "sand", "h": Vector2(3, 5), "off": Vector2(9, 16),
+		 "scatter": _scat(["rock_smallA", "rock_smallC", "cactus_short"])},
 	]
 
 ## Combined AABB of every VisualInstance3D under [root], expressed in [ref] space.
@@ -707,6 +725,8 @@ func _build_environment() -> void:
 	sun.shadow_blur = 1.0
 	sun.directional_shadow_max_distance = 48.0   # crisp shadows only near camera
 	sun.shadow_normal_bias = 1.5
+	sun.light_angular_distance = 0.6             # soft, sun-sized shadow penumbra
+	sun.light_specular = 0.6
 	add_child(sun)
 
 func _build_camera() -> void:
@@ -763,6 +783,13 @@ func _build_ground() -> void:
 		node.position = Vector3(0, 0, 200)
 		buildings.append({"node": node, "active": false})
 
+	# Dense scatter pool: small ground props (grass/flowers/rocks) near the road.
+	for i in 28:
+		var node := Node3D.new()
+		add_child(node)
+		node.position = Vector3(0, 0, 200)
+		scatter_pool.append({"node": node, "active": false})
+
 func _populate_prop(node: Node3D) -> void:
 	# Fill a side-prop container with a model from the current biome.
 	for c in node.get_children():
@@ -775,6 +802,15 @@ func _populate_prop(node: Node3D) -> void:
 		return
 	var scene: PackedScene = props[randi() % props.size()]
 	_add_model(scene, node, randf_range(h.x, h.y), "y", true)
+
+func _populate_scatter(node: Node3D) -> void:
+	for c in node.get_children():
+		c.queue_free()
+	var props: Array = biomes[biome_idx]["scatter"]
+	if props.is_empty():
+		return
+	var scene: PackedScene = props[randi() % props.size()]
+	_add_model(scene, node, randf_range(0.4, 1.3), "y", true)
 
 func _apply_biome() -> void:
 	if surround_mi != null:
@@ -1041,6 +1077,7 @@ func _process(dt: float) -> void:
 	_update_weather(dt)
 	_scroll_dashes(dt)
 	_update_buildings(dt)
+	_update_scatter(dt)
 	_update_props(dt)
 	_update_storm(dt)
 	_update_biome(dt)
@@ -1067,6 +1104,7 @@ func _update_playing(dt: float) -> void:
 	if mult_t > 0.0: mult_t = max(0.0, mult_t - dt)
 	if jet_t > 0.0: jet_t = max(0.0, jet_t - dt)
 	if tank_t > 0.0: tank_t = max(0.0, tank_t - dt)
+	if powerup_cd > 0.0: powerup_cd = max(0.0, powerup_cd - dt)
 	if gun_t > 0.0:
 		gun_t = max(0.0, gun_t - dt)
 		_gun_fire(dt)
@@ -1213,9 +1251,10 @@ func _spawn_row() -> void:
 	for l in [0, 1]:
 		if not occ.has(l):
 			clear.append(l)
-	# Power-ups float mid-gap (clear of all hazards), so any lane is safe.
-	if randf() < 0.14:
+	# Power-ups: rarer, with a cooldown so they never appear back-to-back.
+	if powerup_cd <= 0.0 and randf() < 0.08:
 		_add_powerup(randi() % 2, ["shield", "magnet", "mult", "jet", "tank", "gun"][randi() % 6])
+		powerup_cd = 7.0
 	elif randf() < 0.85:
 		# Coins prefer a clear lane (can sit above a barrier you jump to grab).
 		var cl: Array = clear if clear.size() > 0 else [0, 1]
@@ -1419,6 +1458,27 @@ func _update_buildings(dt: float) -> void:
 				var off := randf_range(orange.x, orange.y)
 				slot["node"].position = Vector3(side * (LANE_X + off), 0, SPAWN_Z - randf_range(0, 6))
 				slot["node"].rotation_degrees = Vector3(0, randf_range(0, 360), 0)
+
+func _update_scatter(dt: float) -> void:
+	var move := _ws() * dt
+	for s in scatter_pool:
+		if s["active"]:
+			s["node"].position.z += move
+			if s["node"].position.z > 10.0:
+				s["active"] = false
+				s["node"].position = Vector3(0, 0, 200)
+	scatter_timer -= _ws() * dt
+	if scatter_timer <= 0.0:
+		scatter_timer = randf_range(2.5, 5.0)
+		for side in [-1.0, 1.0]:
+			for s in scatter_pool:
+				if not s["active"]:
+					s["active"] = true
+					_populate_scatter(s["node"])
+					var off := randf_range(2.6, 6.0)   # close to the road
+					s["node"].position = Vector3(side * (LANE_X + off), 0, SPAWN_Z - randf_range(0, 8))
+					s["node"].rotation_degrees = Vector3(0, randf_range(0, 360), 0)
+					break
 
 func _free_building():
 	for b in buildings:
