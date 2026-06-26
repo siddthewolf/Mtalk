@@ -1,0 +1,24 @@
+; Engine configuration file.
+; Relic Rush — 3D city endless runner (Godot 4.3)
+
+config_version=5
+
+[application]
+
+config/name="Relic Rush"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.3", "Mobile")
+config/icon="res://icon.svg"
+
+[display]
+
+window/size/viewport_width=1080
+window/size/viewport_height=1920
+window/handheld/orientation=1
+window/stretch/mode="viewport"
+window/stretch/aspect="keep"
+
+[rendering]
+
+renderer/rendering_method="mobile"
+textures/vram_compression/import_etc2_astc=true
