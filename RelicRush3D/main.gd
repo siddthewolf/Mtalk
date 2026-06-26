@@ -42,6 +42,7 @@ var crash_flash := 0.0
 # player
 var p_lane := 0
 var p_x := -LANE_X
+var p_x_vel := 0.0          # lane-change velocity (smooth-damp)
 var p_y := 0.0
 var p_vy := 0.0
 var jumping := false
@@ -186,7 +187,7 @@ func _ready() -> void:
 func _setup_quality() -> void:
 	# Anti-aliasing for clean edges (mobile-friendly) + a touch of sharpening.
 	var vp := get_viewport()
-	vp.msaa_3d = Viewport.MSAA_2X
+	vp.msaa_3d = Viewport.MSAA_4X
 	vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
 	vp.use_debanding = true
 	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
@@ -209,6 +210,7 @@ func _run_shots() -> void:
 			_apply_biome()
 	if "--jet" in OS.get_cmdline_args():
 		jet_t = 999.0
+		state = St.PLAYING   # leave the demo so the flying pose is visible
 	await get_tree().create_timer(1.0).timeout
 	for i in range(8):
 		await get_tree().create_timer(0.8).timeout
@@ -704,21 +706,22 @@ func _build_environment() -> void:
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	env.ambient_light_energy = 1.0
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
-	env.tonemap_exposure = 0.85
+	env.tonemap_exposure = 0.88
 	env.tonemap_white = 1.0
-	# Subtle bloom — only genuinely bright things (coins, lights) glow, so the
-	# sky no longer blooms into white haze.
+	# Very restrained bloom — only genuinely bright things (coins, lamps) glow.
+	# Pushed the threshold up and the intensity down so the scene reads crisp
+	# instead of hazy.
 	env.glow_enabled = true
-	env.glow_intensity = 0.35
-	env.glow_strength = 0.9
+	env.glow_intensity = 0.2
+	env.glow_strength = 0.85
 	env.glow_bloom = 0.0
 	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_ADDITIVE
-	env.glow_hdr_threshold = 1.3
-	# Gentle colour grading for a punchier look (no extra brightness).
+	env.glow_hdr_threshold = 1.8
+	# Gentle colour grading: a touch more contrast clears the milky look.
 	env.adjustment_enabled = true
 	env.adjustment_brightness = 1.0
-	env.adjustment_contrast = 1.1
-	env.adjustment_saturation = 1.18
+	env.adjustment_contrast = 1.16
+	env.adjustment_saturation = 1.2
 	we.environment = env
 	add_child(we)
 
@@ -910,18 +913,26 @@ func _build_player() -> void:
 	_box(Vector3(0.26, 0.26, 0.3), Color(0.45, 0.16, 0.12), gun_model, Vector3(0, 0, 0.12))
 	gun_model.visible = false
 
-	# Jetpack flame (under the player, shown while flying).
+	# Jetpack flame (under the player, shown while flying): a tapered cone that
+	# narrows to a point, so it reads as a soft flame rather than a hard box.
 	jet_flame = Node3D.new()
 	player.add_child(jet_flame)
 	jet_flame.position = Vector3(0, 0.2, 0.15)
-	var fl := _box(Vector3(0.32, 0.7, 0.32), Color(1, 0.6, 0.1), jet_flame, Vector3(0, -0.35, 0))
+	var fl := MeshInstance3D.new()
+	var fc := CylinderMesh.new()
+	fc.top_radius = 0.16        # wide at the nozzle
+	fc.bottom_radius = 0.01     # tapers to a point below
+	fc.height = 0.8
+	fl.mesh = fc
+	fl.position = Vector3(0, -0.45, 0)
 	var flm := StandardMaterial3D.new()
-	flm.albedo_color = Color(1, 0.6, 0.1, 0.85)
+	flm.albedo_color = Color(1, 0.55, 0.12, 0.9)
 	flm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	flm.emission_enabled = true
-	flm.emission = Color(1, 0.5, 0.05)
-	flm.emission_energy_multiplier = 4.0
+	flm.emission = Color(1, 0.45, 0.08)
+	flm.emission_energy_multiplier = 1.6
 	fl.material_override = flm
+	jet_flame.add_child(fl)
 	jet_flame.visible = false
 
 	player.position = Vector3(p_x, 0, 0)
@@ -967,28 +978,28 @@ func _build_weathers() -> void:
 		 "fog": 0.0, "fog_c": Color(0.8,0.85,0.9), "precip": 0},
 		{"name": "Sunset", "top": Color(0.23,0.16,0.38), "hor": Color(0.99,0.55,0.32),
 		 "sun": Color(1,0.6,0.32), "sun_e": 1.1, "amb": 0.8, "night": 0.25,
-		 "fog": 0.004, "fog_c": Color(0.9,0.6,0.45), "precip": 0},
+		 "fog": 0.0025, "fog_c": Color(0.9,0.6,0.45), "precip": 0},
 		{"name": "Night", "top": Color(0.03,0.05,0.13), "hor": Color(0.12,0.16,0.3),
 		 "sun": Color(0.5,0.6,0.85), "sun_e": 0.28, "amb": 0.28, "night": 1.0,
 		 "fog": 0.0, "fog_c": Color(0.1,0.12,0.2), "precip": 0, "diff": 1.06},
 		{"name": "Dawn", "top": Color(0.34,0.42,0.66), "hor": Color(1,0.82,0.7),
 		 "sun": Color(1,0.86,0.74), "sun_e": 0.9, "amb": 0.7, "night": 0.15,
-		 "fog": 0.006, "fog_c": Color(0.85,0.78,0.8), "precip": 0},
+		 "fog": 0.0035, "fog_c": Color(0.85,0.78,0.8), "precip": 0},
 		{"name": "Rain", "top": Color(0.22,0.25,0.3), "hor": Color(0.45,0.5,0.55),
 		 "sun": Color(0.7,0.74,0.8), "sun_e": 0.5, "amb": 0.5, "night": 0.4,
-		 "fog": 0.008, "fog_c": Color(0.45,0.5,0.55), "precip": 1, "diff": 1.12},
+		 "fog": 0.005, "fog_c": Color(0.45,0.5,0.55), "precip": 1, "diff": 1.12},
 		{"name": "Snow", "top": Color(0.58,0.66,0.77), "hor": Color(0.88,0.91,0.95),
 		 "sun": Color(0.9,0.93,0.98), "sun_e": 0.8, "amb": 0.85, "night": 0.1,
-		 "fog": 0.007, "fog_c": Color(0.85,0.9,0.95), "precip": 2, "diff": 1.12},
+		 "fog": 0.0045, "fog_c": Color(0.85,0.9,0.95), "precip": 2, "diff": 1.12},
 		{"name": "Fog", "top": Color(0.59,0.6,0.62), "hor": Color(0.8,0.81,0.82),
 		 "sun": Color(0.85,0.85,0.85), "sun_e": 0.6, "amb": 0.7, "night": 0.15,
-		 "fog": 0.013, "fog_c": Color(0.8,0.81,0.82), "precip": 0},
+		 "fog": 0.009, "fog_c": Color(0.8,0.81,0.82), "precip": 0},
 		{"name": "Thunderstorm", "top": Color(0.1,0.11,0.14), "hor": Color(0.2,0.22,0.26),
 		 "sun": Color(0.6,0.64,0.72), "sun_e": 0.3, "amb": 0.35, "night": 0.7,
-		 "fog": 0.016, "fog_c": Color(0.2,0.22,0.27), "precip": 1, "diff": 1.28},
+		 "fog": 0.01, "fog_c": Color(0.2,0.22,0.27), "precip": 1, "diff": 1.28},
 		{"name": "Tornado", "top": Color(0.16,0.15,0.1), "hor": Color(0.32,0.3,0.2),
 		 "sun": Color(0.7,0.68,0.5), "sun_e": 0.4, "amb": 0.45, "night": 0.55,
-		 "fog": 0.02, "fog_c": Color(0.32,0.3,0.22), "precip": 1, "diff": 1.42},
+		 "fog": 0.012, "fog_c": Color(0.32,0.3,0.22), "precip": 1, "diff": 1.42},
 	]
 
 func _randomize_weather() -> void:
@@ -1185,9 +1196,11 @@ func _add_obstacle(lane: int, type: String) -> void:
 				_box(Vector3(1.74, 0.42, 0.16), Color(0.95, 0.45, 0.1), n, Vector3(0, 0.55, 0))
 		"OVERHANG":
 			# Sign gantry with a low caution bar to duck under — SLIDE under it.
-			_box(Vector3(0.2, 2.8, 0.2), Color(0.5, 0.55, 0.6), n, Vector3(-0.96, 1.4, 0))
-			_box(Vector3(0.2, 2.8, 0.2), Color(0.5, 0.55, 0.6), n, Vector3(0.96, 1.4, 0))
-			_box(Vector3(2.3, 0.3, 0.3), Color(0.45, 0.5, 0.55), n, Vector3(0, 2.65, 0))
+			# Rounded (cylindrical) poles and crossbar read smoother than boxes.
+			_cyl(0.1, 2.8, Color(0.5, 0.55, 0.6), n, Vector3(-0.96, 1.4, 0))
+			_cyl(0.1, 2.8, Color(0.5, 0.55, 0.6), n, Vector3(0.96, 1.4, 0))
+			var topbar := _cyl(0.15, 2.3, Color(0.45, 0.5, 0.55), n, Vector3(0, 2.65, 0))
+			topbar.rotation_degrees = Vector3(0, 0, 90)
 			_box(Vector3(1.9, 0.7, 0.1), Color(0.2, 0.5, 0.85), n, Vector3(0, 2.2, 0.16)).material_override = _mat(Color(0.2, 0.5, 0.85), 0.6)
 			_box(Vector3(1.95, 0.45, 0.2), Color(0.9, 0.2, 0.2), n, Vector3(0, 1.35, 0))
 			for sx in [-0.6, -0.2, 0.2, 0.6]:
@@ -1372,7 +1385,16 @@ func _survives(o: Dictionary) -> bool:
 # ==============================================================================
 func _step_player(dt: float) -> void:
 	var target_x := _lane_x(p_lane)
-	p_x = lerp(p_x, target_x, clamp(dt * 12.0, 0.0, 1.0))
+	# Critically-damped smoothing: eases in AND out for a buttery lane change
+	# instead of the abrupt start a plain lerp gives.
+	var smooth_time := 0.17
+	var omega: float = 2.0 / smooth_time
+	var xx: float = omega * dt
+	var expf: float = 1.0 / (1.0 + xx + 0.48 * xx * xx + 0.235 * xx * xx * xx)
+	var change: float = p_x - target_x
+	var temp: float = (p_x_vel + omega * change) * dt
+	p_x_vel = (p_x_vel - omega * temp) * expf
+	p_x = target_x + (change + temp) * expf
 	if jet_t > 0.0:
 		# Jetpack: float above the obstacles.
 		jumping = false; sliding = false
@@ -1410,8 +1432,8 @@ func _animate_player(dt: float) -> void:
 		runner_model.visible = not in_tank
 		var target_sy: float = 0.5 if sliding else 1.0
 		runner_model.scale.y = lerp(runner_model.scale.y, target_sy, clamp(dt * 14.0, 0.0, 1.0))
-		# Lean into flight while the jetpack is active.
-		var tilt: float = -55.0 if jet_t > 0.0 else 0.0
+		# Lean forward into flight while the jetpack is active.
+		var tilt: float = 40.0 if jet_t > 0.0 else 0.0
 		var rx: float = lerp(runner_model.rotation_degrees.x, tilt, clamp(dt * 6.0, 0.0, 1.0))
 		runner_model.rotation_degrees = Vector3(rx, 180.0, 0.0)
 	if tank_model != null:
@@ -1520,7 +1542,7 @@ func _start_game() -> void:
 	powerups.clear()
 	shield_t = 0.0; magnet_t = 0.0; mult_t = 0.0; jet_t = 0.0; tank_t = 0.0; gun_t = 0.0
 	highlight_t = 0.0
-	p_lane = 0; p_x = -LANE_X; p_y = 0.0; p_vy = 0.0
+	p_lane = 0; p_x = -LANE_X; p_x_vel = 0.0; p_y = 0.0; p_vy = 0.0
 	jumping = false; sliding = false
 	speed = START_SPEED
 	dist_to_spawn = GAP_Z
