@@ -8,7 +8,7 @@ extends Node3D
 
 # ---- Tuning -------------------------------------------------------------------
 const LANE_X := 1.15          # half-distance between the two lanes
-const SPAWN_Z := -85.0        # how far ahead things appear (longer sightline)
+const SPAWN_Z := -70.0        # how far ahead things appear
 const CULL_Z := 12.0          # behind the camera -> recycle / remove
 const START_SPEED := 9.0      # gentler start
 const MAX_SPEED := 20.0       # lower top speed -> more reaction time
@@ -92,9 +92,14 @@ var powerups: Array = []       # [{node, lane, type, taken}]
 var shield_t := 0.0
 var magnet_t := 0.0
 var mult_t := 0.0
-var slow_t := 0.0
 var jet_t := 0.0
+var tank_t := 0.0
+var gun_t := 0.0
+var gun_timer := 0.0
+var highlight_t := 0.0       # cinematic camera highlight on pickup
 var shield_bubble: Node3D
+var tank_model: Node3D
+var gun_model: Node3D
 
 # Biomes / scenery
 var biomes: Array = []
@@ -298,7 +303,7 @@ func _load_assets() -> void:
 	for n in ["tree_palm", "tree_palmShort"]:
 		var s = load("res://assets/nature/%s.glb" % n)
 		if s != null: palm_scenes.append(s)
-	for n in ["cactus_tall", "cactus_short", "rock_largeA", "rock_tallE"]:
+	for n in ["cactus_tall", "cactus_short", "rock_tallE"]:   # narrow props only
 		var s = load("res://assets/nature/%s.glb" % n)
 		if s != null: desert_scenes.append(s)
 	_build_biomes()
@@ -306,9 +311,9 @@ func _load_assets() -> void:
 func _build_biomes() -> void:
 	biomes = [
 		{"name": "City", "props": building_scenes, "ground": "concrete", "h": Vector2(6, 10), "off": Vector2(13, 20)},
-		{"name": "Forest", "props": tree_scenes, "ground": "grass", "h": Vector2(5, 9), "off": Vector2(4, 10)},
-		{"name": "Beach", "props": palm_scenes, "ground": "sand", "h": Vector2(5, 8), "off": Vector2(4, 9)},
-		{"name": "Desert", "props": desert_scenes, "ground": "sand", "h": Vector2(3, 6), "off": Vector2(5, 12)},
+		{"name": "Forest", "props": tree_scenes, "ground": "grass", "h": Vector2(5, 9), "off": Vector2(6, 12)},
+		{"name": "Beach", "props": palm_scenes, "ground": "sand", "h": Vector2(5, 8), "off": Vector2(6, 11)},
+		{"name": "Desert", "props": desert_scenes, "ground": "sand", "h": Vector2(3, 5), "off": Vector2(9, 16)},
 	]
 
 ## Combined AABB of every VisualInstance3D under [root], expressed in [ref] space.
@@ -365,7 +370,7 @@ func _play(p: AudioStreamPlayer) -> void:
 		p.play()
 
 func _build_streetlights() -> void:
-	for i in 14:
+	for i in 8:
 		var n := Node3D.new()
 		add_child(n)
 		_cyl(0.08, 5.0, Color(0.2, 0.2, 0.23), n, Vector3(0, 2.5, 0))            # pole
@@ -416,7 +421,7 @@ func _build_storm() -> void:
 	add_child(tornado)
 	var y := 0.0
 	var r := 0.6
-	for i in 12:
+	for i in 8:
 		var shade := 0.22 - i * 0.008
 		_cyl(r, 2.6, Color(shade, shade - 0.02, shade - 0.06), tornado, Vector3(0, y + 1.3, 0))
 		y += 2.4
@@ -490,7 +495,7 @@ func _build_effects() -> void:
 	# Desert blowing sand (horizontal streaks in front of the camera).
 	sand_root = Node3D.new()
 	cam.add_child(sand_root)
-	for i in 80:
+	for i in 40:
 		var s := _box(Vector3(0.18, 0.04, 0.04), Color(0.85, 0.72, 0.45, 1), sand_root)
 		s.position = Vector3(randf_range(-9, 9), randf_range(-3, 4), -randf_range(3, 12))
 		sand_bits.append(s)
@@ -565,8 +570,8 @@ func _build_environment() -> void:
 	sun.light_energy = 1.35
 	sun.light_color = Color(1.0, 0.97, 0.9)
 	sun.shadow_enabled = true
-	sun.shadow_blur = 1.2
-	sun.directional_shadow_max_distance = 110.0
+	sun.shadow_blur = 1.0
+	sun.directional_shadow_max_distance = 45.0   # shadows only near camera -> faster
 	add_child(sun)
 
 func _build_camera() -> void:
@@ -617,7 +622,7 @@ func _build_ground() -> void:
 		dashes.append(d)
 
 	# Pool of side-prop containers (filled with the current biome's prop on spawn).
-	for i in 16:
+	for i in 11:
 		var node := Node3D.new()
 		add_child(node)
 		node.position = Vector3(0, 0, 200)
@@ -647,7 +652,7 @@ func _build_player() -> void:
 	add_child(player)
 
 	# Player character (Mixamo jogging FBX), running on foot.
-	runner_model = _add_model(runner_scene, player, 1.45, "y", true)
+	runner_model = _add_model(runner_scene, player, 1.2, "y", true)
 	runner_model.rotation_degrees = Vector3(0, 180, 0)   # face away from the camera
 
 	# Tint the mannequin into a red-hoodie stand-in (shaded so it catches light).
@@ -708,16 +713,34 @@ func _build_player() -> void:
 	sb.material_override = sbm
 	shield_bubble.visible = false
 
+	# Tank ride (shown while the tank power-up is active; runner is hidden).
+	tank_model = Node3D.new()
+	player.add_child(tank_model)
+	_box(Vector3(1.5, 0.5, 2.3), Color(0.42, 0.46, 0.34), tank_model, Vector3(0, 0.5, 0))
+	_box(Vector3(0.38, 0.5, 2.5), Color(0.14, 0.14, 0.14), tank_model, Vector3(-0.74, 0.32, 0))
+	_box(Vector3(0.38, 0.5, 2.5), Color(0.14, 0.14, 0.14), tank_model, Vector3(0.74, 0.32, 0))
+	_box(Vector3(0.95, 0.5, 0.95), Color(0.36, 0.4, 0.3), tank_model, Vector3(0, 0.95, 0))
+	_box(Vector3(0.2, 0.2, 1.5), Color(0.3, 0.32, 0.26), tank_model, Vector3(0, 1.0, -1.0))
+	tank_model.visible = false
+
+	# Bazooka (shown while the gun power-up is active).
+	gun_model = Node3D.new()
+	player.add_child(gun_model)
+	gun_model.position = Vector3(0.35, 1.0, -0.25)
+	_box(Vector3(0.18, 0.18, 1.1), Color(0.22, 0.22, 0.26), gun_model, Vector3(0, 0, -0.45))
+	_box(Vector3(0.26, 0.26, 0.3), Color(0.45, 0.16, 0.12), gun_model, Vector3(0, 0, 0.12))
+	gun_model.visible = false
+
 	player.position = Vector3(p_x, 0, 0)
 
 func _build_weather_particles() -> void:
 	rain_root = Node3D.new(); cam.add_child(rain_root)
 	snow_root = Node3D.new(); cam.add_child(snow_root)
-	for i in 90:
+	for i in 55:
 		var d := _box(Vector3(0.02, 0.5, 0.02), Color(0.8, 0.86, 0.95, 1), rain_root)
 		d.position = Vector3(randf_range(-6, 6), randf_range(-5, 6), -randf_range(3, 12))
 		rain_drops.append(d)
-	for i in 70:
+	for i in 45:
 		var f := _box(Vector3(0.08, 0.08, 0.08), Color(1, 1, 1, 1), snow_root)
 		f.position = Vector3(randf_range(-7, 7), randf_range(-5, 6), -randf_range(3, 12))
 		snow_flakes.append(f)
@@ -805,8 +828,8 @@ func _apply_weather() -> void:
 	wdiff = lerp(float(wA.get("diff", 1.0)), float(wB.get("diff", 1.0)), t)
 
 func _ws() -> float:
-	# Effective world speed: base speed scaled by weather difficulty and slow-mo.
-	return speed * wdiff * (0.5 if slow_t > 0.0 else 1.0)
+	# Effective world speed: base speed scaled by the current weather difficulty.
+	return speed * wdiff
 
 func _night_factor() -> float:
 	return _lf(wA["night"], wB["night"])
@@ -874,8 +897,11 @@ func _update_playing(dt: float) -> void:
 	if shield_t > 0.0: shield_t = max(0.0, shield_t - dt)
 	if magnet_t > 0.0: magnet_t = max(0.0, magnet_t - dt)
 	if mult_t > 0.0: mult_t = max(0.0, mult_t - dt)
-	if slow_t > 0.0: slow_t = max(0.0, slow_t - dt)
 	if jet_t > 0.0: jet_t = max(0.0, jet_t - dt)
+	if tank_t > 0.0: tank_t = max(0.0, tank_t - dt)
+	if gun_t > 0.0:
+		gun_t = max(0.0, gun_t - dt)
+		_gun_fire(dt)
 	_step_player(dt)
 	dist_to_spawn -= _ws() * dt
 	if dist_to_spawn <= 0.0:
@@ -984,8 +1010,9 @@ func _add_powerup(lane: int, type: String) -> void:
 	match type:
 		"magnet": col = Color(1.0, 0.45, 0.2)  # orange
 		"mult": col = Color(0.45, 1.0, 0.4)    # green
-		"slow": col = Color(0.7, 0.4, 1.0)     # purple
 		"jet": col = Color(1.0, 0.9, 0.2)      # yellow
+		"tank": col = Color(0.5, 0.55, 0.4)    # olive
+		"gun": col = Color(0.9, 0.2, 0.15)     # red
 	var core := _sph(0.42, col, n, Vector3.ZERO)
 	core.material_override = _mat(col, 1.4)
 	var ring := _cyl(0.6, 0.08, col, n, Vector3.ZERO)
@@ -1019,8 +1046,8 @@ func _spawn_row() -> void:
 			free.append(l)
 	if free.size() > 0:
 		var lane: int = free[randi() % free.size()]
-		if randf() < 0.12:
-			_add_powerup(lane, ["shield", "magnet", "mult", "slow", "jet"][randi() % 5])
+		if randf() < 0.13:
+			_add_powerup(lane, ["shield", "magnet", "mult", "jet", "tank", "gun"][randi() % 6])
 		elif randf() < 0.85:
 			_add_coin(lane)
 
@@ -1030,9 +1057,14 @@ func _advance(dt: float) -> void:
 		o["node"].position.z += move
 		if not o["resolved"] and o["node"].position.z >= 0.0:
 			o["resolved"] = true
-			if state == St.PLAYING and int(o["lane"]) == _round_lane() and not _survives(o):
-				if shield_t > 0.0 or jet_t > 0.0:
-					crash_flash = 0.4          # shield / jetpack shrugs it off
+			if state == St.PLAYING and int(o["lane"]) == _round_lane():
+				if tank_t > 0.0:
+					o["node"].visible = false   # tank plows through
+					_play(sfx_crash)
+				elif _survives(o):
+					pass
+				elif shield_t > 0.0 or jet_t > 0.0:
+					crash_flash = 0.4           # shield / jetpack shrugs it off
 				else:
 					_game_over()
 	for c in coin_nodes:
@@ -1082,12 +1114,33 @@ func _advance(dt: float) -> void:
 
 func _activate_powerup(type: String) -> void:
 	_play(sfx_coin)
+	highlight_t = 1.4   # cinematic camera highlight
 	match type:
 		"shield": shield_t = POWERUP_TIME
 		"magnet": magnet_t = POWERUP_TIME
 		"mult": mult_t = POWERUP_TIME
-		"slow": slow_t = POWERUP_TIME
 		"jet": jet_t = POWERUP_TIME
+		"tank": tank_t = POWERUP_TIME
+		"gun": gun_t = POWERUP_TIME; gun_timer = 0.0
+
+func _gun_fire(dt: float) -> void:
+	# Bazooka auto-targets and destroys the nearest obstacle ahead.
+	gun_timer -= dt
+	if gun_timer > 0.0:
+		return
+	gun_timer = 0.45
+	var target: Dictionary = {}
+	var best := -INF
+	for o in obstacles:
+		if not o["resolved"] and o["node"].position.z < 0.0 and o["node"].position.z > best:
+			best = o["node"].position.z
+			target = o
+	if not target.is_empty():
+		target["resolved"] = true
+		target["node"].visible = false
+		_play(sfx_crash)
+		if gun_model != null:
+			gun_model.scale = Vector3(1.3, 1.3, 1.3)   # quick recoil pop
 
 func _survives(o: Dictionary) -> bool:
 	match o["type"]:
@@ -1128,17 +1181,36 @@ func _animate_player(dt: float) -> void:
 	# Lean into turns; sync the run animation to speed; squash low when sliding.
 	var lean: float = clamp((_lane_x(p_lane) - p_x) * 0.6, -0.5, 0.5)
 	player.rotation.z = -lean
-	# Gentle camera follow keeps the runner near centre while still reading lanes.
-	cam.position.x = lerp(cam.position.x, p_x * 0.4, clamp(dt * 6.0, 0.0, 1.0))
+	_update_camera(dt)
 	if runner_anim != null:
 		runner_anim.speed_scale = clamp(_ws() / 11.0, 0.7, 2.6)
+	var in_tank := tank_t > 0.0
 	if runner_model != null:
+		runner_model.visible = not in_tank
 		var target_sy: float = 0.5 if sliding else 1.0
 		runner_model.scale.y = lerp(runner_model.scale.y, target_sy, clamp(dt * 14.0, 0.0, 1.0))
+	if tank_model != null:
+		tank_model.visible = in_tank
+	if gun_model != null:
+		gun_model.visible = gun_t > 0.0
+		gun_model.scale = gun_model.scale.lerp(Vector3.ONE, clamp(dt * 8.0, 0.0, 1.0))
 	if shield_bubble != null:
 		shield_bubble.visible = shield_t > 0.0 or jet_t > 0.0
 		if shield_bubble.visible:
 			shield_bubble.rotation.y += dt * 2.0
+
+func _update_camera(dt: float) -> void:
+	if highlight_t > 0.0:
+		# Cinematic swing around the player to show off the power-up.
+		highlight_t = max(0.0, highlight_t - dt)
+		var t: float = 1.0 - highlight_t / 1.4
+		var desired := Vector3(p_x + sin(t * PI * 1.1) * 3.6, 1.9, 3.0)
+		cam.position = cam.position.lerp(desired, clamp(dt * 8.0, 0.0, 1.0))
+		cam.look_at(Vector3(p_x, 1.1, 0.0), Vector3.UP)
+	else:
+		var desired := Vector3(lerp(cam.position.x, p_x * 0.4, clamp(dt * 6.0, 0.0, 1.0)), 4.4, 7.8)
+		cam.position = cam.position.lerp(desired, clamp(dt * 5.0, 0.0, 1.0))
+		cam.look_at(Vector3(p_x * 0.2, 1.0, -28.0), Vector3.UP)
 
 
 # ==============================================================================
@@ -1205,7 +1277,8 @@ func _start_game() -> void:
 	obstacles.clear()
 	coin_nodes.clear()
 	powerups.clear()
-	shield_t = 0.0; magnet_t = 0.0; mult_t = 0.0; slow_t = 0.0; jet_t = 0.0
+	shield_t = 0.0; magnet_t = 0.0; mult_t = 0.0; jet_t = 0.0; tank_t = 0.0; gun_t = 0.0
+	highlight_t = 0.0
 	p_lane = 0; p_x = -LANE_X; p_y = 0.0; p_vy = 0.0
 	jumping = false; sliding = false
 	speed = START_SPEED
@@ -1371,8 +1444,9 @@ func _powerup_text() -> String:
 	if shield_t > 0.0: t += "[SHIELD %d]  " % int(ceil(shield_t))
 	if magnet_t > 0.0: t += "[MAGNET %d]  " % int(ceil(magnet_t))
 	if mult_t > 0.0: t += "[2X %d]  " % int(ceil(mult_t))
-	if slow_t > 0.0: t += "[SLOW %d]  " % int(ceil(slow_t))
-	if jet_t > 0.0: t += "[JETPACK %d]" % int(ceil(jet_t))
+	if jet_t > 0.0: t += "[JETPACK %d]  " % int(ceil(jet_t))
+	if tank_t > 0.0: t += "[TANK %d]  " % int(ceil(tank_t))
+	if gun_t > 0.0: t += "[BAZOOKA %d]" % int(ceil(gun_t))
 	return t
 
 
