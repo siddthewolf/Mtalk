@@ -67,6 +67,14 @@ var runner_model: Node3D
 var runner_anim: AnimationPlayer
 var car_scenes: Array = []
 var building_scenes: Array = []
+var streetlights: Array = []
+var light_timer := 0.0
+
+# Audio (CC0, Kenney)
+var sfx_coin: AudioStreamPlayer
+var sfx_jump: AudioStreamPlayer
+var sfx_slide: AudioStreamPlayer
+var sfx_crash: AudioStreamPlayer
 
 var obstacles: Array = []      # [{node, type, lane, resolved}]
 var coin_nodes: Array = []     # [{node, lane, taken}]
@@ -113,7 +121,9 @@ func _ready() -> void:
 	_load_assets()
 	_build_ground()
 	_build_player()
+	_build_streetlights()
 	_build_weather_particles()
+	_build_audio()
 	_build_ui()
 	_randomize_weather()
 	demo_caption = "Watch the demo…"
@@ -271,6 +281,58 @@ func _add_model(scene: PackedScene, parent: Node3D, target: float, fit_axis: Str
 	(inst as Node3D).position = Vector3(-(box.position.x + size.x * 0.5) * s, oy, -(box.position.z + size.z * 0.5) * s)
 	return wrap
 
+func _audio(path: String, db: float) -> AudioStreamPlayer:
+	var p := AudioStreamPlayer.new()
+	p.stream = load(path)
+	p.volume_db = db
+	add_child(p)
+	return p
+
+func _build_audio() -> void:
+	sfx_coin = _audio("res://assets/sfx/coin.ogg", -5.0)
+	sfx_jump = _audio("res://assets/sfx/jump.ogg", -9.0)
+	sfx_slide = _audio("res://assets/sfx/slide.ogg", -9.0)
+	sfx_crash = _audio("res://assets/sfx/crash.ogg", -1.0)
+
+func _play(p: AudioStreamPlayer) -> void:
+	if p != null and p.stream != null:
+		p.play()
+
+func _build_streetlights() -> void:
+	for i in 14:
+		var n := Node3D.new()
+		add_child(n)
+		_cyl(0.08, 5.0, Color(0.2, 0.2, 0.23), n, Vector3(0, 2.5, 0))            # pole
+		_box(Vector3(0.8, 0.12, 0.16), Color(0.22, 0.22, 0.25), n, Vector3(0.38, 4.95, 0))  # arm
+		var lamp_mat := _flat(Color(1.0, 0.9, 0.65))
+		var lamp := _box(Vector3(0.38, 0.16, 0.28), Color(1.0, 0.9, 0.65), n, Vector3(0.66, 4.88, 0))
+		lamp.material_override = lamp_mat
+		n.position = Vector3(0, 0, 200)
+		streetlights.append({"node": n, "mat": lamp_mat, "active": false})
+
+func _update_props(dt: float) -> void:
+	var nf := _night_factor()
+	for s in streetlights:
+		if s["active"]:
+			s["node"].position.z += speed * dt
+			if s["node"].position.z > 10.0:
+				s["active"] = false
+				s["node"].position = Vector3(0, 0, 200)
+		var m: StandardMaterial3D = s["mat"]
+		m.emission_enabled = nf > 0.15
+		m.emission = Color(1.0, 0.86, 0.55)
+		m.emission_energy_multiplier = nf * 4.0
+	light_timer -= speed * dt
+	if light_timer <= 0.0:
+		light_timer += 18.0
+		for side in [-1.0, 1.0]:
+			for s in streetlights:
+				if not s["active"]:
+					s["active"] = true
+					s["node"].position = Vector3(side * (LANE_X + 1.6), 0, SPAWN_Z)
+					s["node"].rotation_degrees = Vector3(0, 0.0 if side < 0 else 180.0, 0)
+					break
+
 func _build_environment() -> void:
 	var we := WorldEnvironment.new()
 	env = Environment.new()
@@ -329,6 +391,18 @@ func _build_ground() -> void:
 	road.material_override = _pbr_mat("asphalt", Vector2(2, 90), true)
 	road.position = Vector3(0, 0.0, -90)
 	add_child(road)
+
+	# Raised concrete sidewalks lining the road.
+	var walk_mat := _pbr_mat("concrete", Vector2(3, 120))
+	var road_half := LANE_X + 1.1
+	for side in [-1.0, 1.0]:
+		var sw := MeshInstance3D.new()
+		var sm := BoxMesh.new()
+		sm.size = Vector3(2.4, 0.16, 260)
+		sw.mesh = sm
+		sw.material_override = walk_mat
+		sw.position = Vector3(side * (road_half + 1.2), 0.08, -90)
+		add_child(sw)
 
 	# Centre dashed line (pool, recycled forward).
 	var n := 26
@@ -526,6 +600,7 @@ func _process(dt: float) -> void:
 	_update_weather(dt)
 	_scroll_dashes(dt)
 	_update_buildings(dt)
+	_update_props(dt)
 	_animate_player(dt)
 	_light_windows()
 
@@ -687,6 +762,7 @@ func _advance(dt: float) -> void:
 			if state == St.PLAYING:
 				coins += 1
 				score += COIN_VALUE
+				_play(sfx_coin)
 	# cull
 	var keep_o := []
 	for o in obstacles:
@@ -814,6 +890,7 @@ func _start_game() -> void:
 func _game_over() -> void:
 	state = St.OVER
 	crash_flash = 1.0
+	_play(sfx_crash)
 	if score > high:
 		high = score
 		_save_high()
@@ -829,11 +906,13 @@ func _do_jump() -> void:
 		jumping = true
 		sliding = false
 		p_vy = JUMP_VELOCITY
+		_play(sfx_jump)
 
 func _do_slide() -> void:
 	if not jumping and not sliding:
 		sliding = true
 		slide_t = SLIDE_TIME
+		_play(sfx_slide)
 
 func move_left() -> void:
 	if p_lane > 0:
