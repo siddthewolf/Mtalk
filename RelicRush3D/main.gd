@@ -574,24 +574,21 @@ func _build_environment() -> void:
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	env.ambient_light_energy = 1.0
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
-	env.tonemap_exposure = 1.0
-	env.tonemap_white = 1.1
-	# Bloom makes coins, headlights, lit windows and power-ups glow.
+	env.tonemap_exposure = 0.85
+	env.tonemap_white = 1.0
+	# Subtle bloom — only genuinely bright things (coins, lights) glow, so the
+	# sky no longer blooms into white haze.
 	env.glow_enabled = true
-	env.glow_intensity = 0.95
-	env.glow_strength = 1.15
-	env.glow_bloom = 0.28
-	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SCREEN
-	env.glow_hdr_threshold = 0.9
-	# Colour grading for a punchier, more vivid look.
+	env.glow_intensity = 0.35
+	env.glow_strength = 0.9
+	env.glow_bloom = 0.0
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_ADDITIVE
+	env.glow_hdr_threshold = 1.3
+	# Gentle colour grading for a punchier look (no extra brightness).
 	env.adjustment_enabled = true
-	env.adjustment_brightness = 1.03
-	env.adjustment_contrast = 1.12
-	env.adjustment_saturation = 1.22
-	# Subtle distance fog for depth (kept light so the view stays clear).
-	env.fog_enabled = true
-	env.fog_density = 0.004
-	env.fog_aerial_perspective = 0.4
+	env.adjustment_brightness = 1.0
+	env.adjustment_contrast = 1.1
+	env.adjustment_saturation = 1.18
 	we.environment = env
 	add_child(we)
 
