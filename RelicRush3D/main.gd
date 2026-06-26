@@ -258,7 +258,7 @@ func _prism(size: Vector3, col: Color, parent: Node3D, pos := Vector3.ZERO) -> M
 	return mi
 
 func _load_assets() -> void:
-	runner_scene = load("res://assets/char/jogging4.fbx")
+	runner_scene = load("res://assets/char/jogging7.fbx")
 	if runner_scene == null:
 		runner_scene = load("res://assets/char/runner.glb")
 	for n in ["sedan", "suv", "taxi", "van", "police", "hatchback-sports"]:
