@@ -8,14 +8,15 @@ extends Node3D
 
 # ---- Tuning -------------------------------------------------------------------
 const LANE_X := 1.15          # half-distance between the two lanes
-const SPAWN_Z := -70.0        # how far ahead things appear
+const SPAWN_Z := -82.0        # how far ahead things appear (more lead time at speed)
 const CULL_Z := 12.0          # behind the camera -> recycle / remove
 const START_SPEED := 9.0      # gentle start
 const MAX_SPEED := 33.0       # ramps to a fast, demanding top speed
 const ACCEL := 0.38           # gradual but persistent speed-up
 const GRACE := 3.0
 const TUTORIAL_TIME := 10.0
-const GAP_Z := 22.0           # more spacing so the next obstacle isn't on top of you
+const GAP_Z := 22.0           # minimum spacing so the next obstacle isn't on top of you
+const GAP_TIME := 1.35        # target seconds between obstacles; gap grows with speed
 const JUMP_VELOCITY := 8.5    # higher hop...
 const GRAVITY := -28.0        # ...but strong gravity keeps air time short (~0.6 s)
 const JUMP_CLEAR := 0.6
@@ -1127,7 +1128,10 @@ func _update_playing(dt: float) -> void:
 	if dist_to_spawn <= 0.0:
 		if game_time > GRACE:
 			_spawn_row()
-		dist_to_spawn += GAP_Z * randf_range(0.85, 1.45)
+		# Space obstacles by TIME, not fixed distance: as the world speeds up the
+		# gap grows so you always get ~GAP_TIME seconds to react.
+		var gap: float = max(GAP_Z, _ws() * GAP_TIME)
+		dist_to_spawn += gap * randf_range(0.95, 1.4)
 	_advance(dt)
 	score += int(_ws() * dt * 6.0)
 
