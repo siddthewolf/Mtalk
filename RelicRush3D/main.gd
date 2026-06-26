@@ -1339,7 +1339,6 @@ func _advance(dt: float) -> void:
 	powerups = keep_pu
 
 func _activate_powerup(type: String) -> void:
-	_play(sfx_powerup)
 	match type:
 		"shield": shield_t = POWERUP_TIME
 		"magnet": magnet_t = POWERUP_TIME
