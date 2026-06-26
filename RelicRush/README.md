@@ -13,13 +13,14 @@ is 100% original work that you can publish and monetize.
 
 ## Gameplay
 
-- A skater auto-rolls forward; the world rushes toward the camera (pseudo-3D).
-- **Drag your thumb left / right** — the board follows to that lane (cursor-style
-  steering); a quick **swipe left / right** also hops one lane.
-- **Swipe up** (or tap) — jump over striped **barriers**
-- **Swipe down** — slide under stone **overhangs**
-- Tall **blocks** can't be jumped or slid — change lanes to dodge
-- Collect glowing **relics** for bonus points
+- A skater auto-rolls down a **two-lane** city street (pseudo-3D perspective).
+- **Swipe left / right** — switch lane (clean, deliberate swipes; no jittery drag)
+- **Swipe up** (or tap) — jump over orange **road barriers**
+- **Swipe down** — slide under **sign gantries**
+- **Cars** block a lane — switch lanes to dodge them
+- Most hazards span both lanes, so the game is mostly **timing jumps and slides**;
+  lane-changes are the rarer move
+- Obstacle types and spacing are **randomized**; collect **coins** for points
 - Speed starts slow and ramps up gradually; high score is saved locally
 - The game opens with an **auto-playing demo** that demonstrates each move —
   tap any time to start your own run
@@ -27,9 +28,10 @@ is 100% original work that you can publish and monetize.
 
 ## Atmosphere
 
-The world cycles through randomized environments while you play — clear day,
-sunset, night (with stars and a moon), dawn, **rain**, **snow**, and **fog** —
-cross-fading every ~20–30 seconds. Each run starts on a random one.
+The city cycles through randomized environments while you play — clear day,
+sunset, night (with stars, a moon and **lit building windows**), dawn, **rain**,
+**snow**, and **fog** — cross-fading every ~20–30 seconds. Each run starts on a
+random one.
 
 ## Project layout
 

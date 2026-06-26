@@ -22,9 +22,10 @@ import kotlin.random.Random
 
 /**
  * Owns all game state, the simulation step ([update]) and all drawing
- * ([render]). Uses a lightweight pseudo-3D projection: lane objects carry a
- * depth `z` (0 = at the player, larger = further away) which is projected to
- * screen position and scale so the world appears to rush toward the camera.
+ * ([render]). A two-lane endless runner set in a stylised city, using a
+ * lightweight pseudo-3D projection: lane objects carry a depth `z` (0 = at the
+ * player, larger = further away) which is projected to screen position and
+ * scale so the world appears to rush toward the camera.
  *
  * All visuals are drawn procedurally with [Canvas] primitives — there are no
  * image assets, which keeps the game fully original and dependency-free.
@@ -32,40 +33,38 @@ import kotlin.random.Random
 class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
 
     // ====================================================================================
-    //  Small value types
+    //  Value types
     // ====================================================================================
-
-    /** A short-lived screen-space spark, used for relic-pickup bursts. */
     private class Particle(
         var x: Float, var y: Float, var vx: Float, var vy: Float,
         var life: Float, val maxLife: Float, val color: Int, val size: Float
     )
-
     private class Drop(var x: Float, var y: Float, var len: Float, var speed: Float)
     private class Flake(var x: Float, var y: Float, var r: Float, var speed: Float, var phase: Float)
     private class Star(val x: Float, val y: Float, val phase: Float, val r: Float)
+    private class Building(val left: Float, val width: Float, val height: Float, val color: Int, val seed: Int)
 
-    /** A full environment look: sky, ground, celestial body, precipitation, mood. */
     private class Weather(
         val name: String,
         val skyTop: Int, val skyMid: Int, val skyHorizon: Int,
         val groundTop: Int, val groundBottom: Int,
+        val buildingTint: Int,
         val sunColor: Int, val sunAlpha: Float, val sunRadius: Float,
-        val starAlpha: Float,
-        val precip: Int,            // 0 none, 1 rain, 2 snow
-        val fog: Float,             // 0..1 haze strength
-        val ambient: Int            // overlay tint (with alpha); 0 = none
+        val night: Float,          // 0 day .. 1 night (lights windows, shows stars)
+        val precip: Int,           // 0 none, 1 rain, 2 snow
+        val fog: Float,
+        val ambient: Int
     )
 
     // ====================================================================================
-    //  Tunable constants
+    //  Tunables
     // ====================================================================================
     private val zFar = 1.25f
     private val zCull = -0.18f
-    private val spawnGapZ = 0.44f
-    private val startSpeed = 0.40f
-    private val maxSpeed = 1.55f
-    private val accel = 0.0075f
+    private val baseGapZ = 0.5f
+    private val startSpeed = 0.42f
+    private val maxSpeed = 1.5f
+    private val accel = 0.0072f
     private val graceTime = 2.2f
     private val tutorialTime = 10f
     private val weatherTransition = 5f
@@ -98,37 +97,29 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     private var screenW = 1f
     private var screenH = 1f
 
-    // Demo choreography
     private var demoTimer = 0f
     private var demoIndex = 0
     private var demoCaption = ""
 
-    // Weather
     private lateinit var palette: List<Weather>
-    private var wA = neutralWeather()
+    private var wA = dayWeather()
     private var wB = wA
     private var weatherBlend = 1f
     private var weatherTimer = 0f
     private var transitioning = false
 
-    // Weather effect buffers (sized once we know the screen)
     private var rain: Array<Drop> = arrayOf()
     private var snow: Array<Flake> = arrayOf()
     private var stars: Array<Star> = arrayOf()
+    private var skyline: Array<Building> = arrayOf()
 
     // ====================================================================================
-    //  Paints / shaders
+    //  Paints
     // ====================================================================================
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; color = Color.argb(90, 0, 0, 0)
-    }
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE; textAlign = Paint.Align.LEFT
-    }
-    private val centerText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE; textAlign = Paint.Align.CENTER
-    }
+    private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.argb(110, 0, 0, 0) }
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textAlign = Paint.Align.LEFT }
+    private val centerText = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textAlign = Paint.Align.CENTER }
     private var vignetteShader: Shader? = null
 
     private var thread: GameThread? = null
@@ -151,18 +142,18 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         screenW = width.toFloat()
         screenH = height.toFloat()
         vignetteShader = RadialGradient(
-            screenW / 2f, screenH * 0.55f, max(screenW, screenH) * 0.75f,
-            intArrayOf(Color.TRANSPARENT, Color.argb(120, 0, 0, 0)),
-            floatArrayOf(0.6f, 1f), Shader.TileMode.CLAMP
+            screenW / 2f, screenH * 0.55f, max(screenW, screenH) * 0.78f,
+            intArrayOf(Color.TRANSPARENT, Color.argb(125, 0, 0, 0)),
+            floatArrayOf(0.58f, 1f), Shader.TileMode.CLAMP
         )
         textPaint.textSize = screenH * 0.030f
-        rain = Array(160) { Drop(rng.nextFloat() * screenW, rng.nextFloat() * screenH, screenH * (0.03f + rng.nextFloat() * 0.04f), screenH * (1.1f + rng.nextFloat() * 0.7f)) }
+        rain = Array(170) { Drop(rng.nextFloat() * screenW, rng.nextFloat() * screenH, screenH * (0.03f + rng.nextFloat() * 0.04f), screenH * (1.2f + rng.nextFloat() * 0.7f)) }
         snow = Array(110) { Flake(rng.nextFloat() * screenW, rng.nextFloat() * screenH, screenW * (0.004f + rng.nextFloat() * 0.008f), screenH * (0.12f + rng.nextFloat() * 0.12f), rng.nextFloat() * 6.28f) }
-        stars = Array(70) { Star(rng.nextFloat() * screenW, rng.nextFloat() * horizonY() * 0.95f, rng.nextFloat() * 6.28f, screenW * (0.002f + rng.nextFloat() * 0.004f)) }
+        stars = Array(70) { Star(rng.nextFloat() * screenW, rng.nextFloat() * horizonY() * 0.9f, rng.nextFloat() * 6.28f, screenW * (0.002f + rng.nextFloat() * 0.004f)) }
+        buildSkyline()
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) = stopThread()
-
     fun resume() = startThread()
     fun pause() = stopThread()
 
@@ -175,19 +166,17 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     private fun stopThread() {
         val t = thread ?: return
         t.running = false
-        while (true) {
-            try { t.join(); break } catch (_: InterruptedException) { /* retry */ }
-        }
+        while (true) { try { t.join(); break } catch (_: InterruptedException) {} }
         thread = null
     }
 
     // ====================================================================================
-    //  Projection
+    //  Projection (two lanes: 0 = left, 1 = right)
     // ====================================================================================
-    private val horizonFrac = 0.38f
+    private val horizonFrac = 0.40f
     private fun horizonY() = screenH * horizonFrac
     private fun groundBottomY() = screenH * 1.04f
-    private fun laneSpacing() = screenW * 0.27f
+    private fun laneSpacing() = screenW * 0.30f
     private fun scaleAt(z: Float): Float = 0.34f / (z + 0.34f)
     private val sNear = scaleAt(0f)
     private val sFar = scaleAt(zFar)
@@ -198,39 +187,52 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     }
 
     private fun laneXAt(laneFrac: Float, z: Float): Float =
-        screenW / 2f + (laneFrac - 1f) * laneSpacing() * scaleAt(z)
+        screenW / 2f + (laneFrac - 0.5f) * laneSpacing() * scaleAt(z)
 
     // ====================================================================================
-    //  Weather
+    //  Weather / city
     // ====================================================================================
-    private fun neutralWeather() = Weather(
-        "Day", Color.rgb(58, 110, 190), Color.rgb(120, 170, 220), Color.rgb(220, 224, 210),
-        Color.rgb(56, 96, 60), Color.rgb(30, 62, 40),
-        Color.rgb(255, 240, 190), 1f, 0.16f, 0f, 0, 0f, 0
+    private fun dayWeather() = Weather(
+        "Day", Color.rgb(74, 134, 206), Color.rgb(132, 178, 222), Color.rgb(208, 220, 226),
+        Color.rgb(96, 104, 116), Color.rgb(62, 70, 80), Color.rgb(120, 130, 146),
+        Color.rgb(255, 244, 200), 1f, 0.16f, 0f, 0, 0f, 0
     )
 
     private fun buildPalette() {
         palette = listOf(
-            neutralWeather(),
-            Weather("Sunset", Color.rgb(60, 40, 96), Color.rgb(206, 96, 92), Color.rgb(250, 178, 96),
-                Color.rgb(96, 70, 60), Color.rgb(52, 38, 44),
-                Color.rgb(255, 168, 96), 1f, 0.22f, 0.15f, 0, 0f, Color.argb(40, 255, 120, 40)),
-            Weather("Night", Color.rgb(8, 12, 34), Color.rgb(20, 26, 58), Color.rgb(48, 54, 96),
-                Color.rgb(30, 44, 50), Color.rgb(14, 24, 30),
-                Color.rgb(232, 236, 245), 0.95f, 0.13f, 1f, 0, 0f, Color.argb(95, 10, 16, 48)),
-            Weather("Dawn", Color.rgb(70, 92, 150), Color.rgb(196, 150, 180), Color.rgb(255, 210, 170),
-                Color.rgb(64, 100, 70), Color.rgb(36, 66, 46),
-                Color.rgb(255, 224, 200), 0.9f, 0.15f, 0.25f, 0, 0f, Color.argb(30, 255, 180, 150)),
-            Weather("Rain", Color.rgb(58, 66, 78), Color.rgb(82, 92, 104), Color.rgb(120, 130, 140),
-                Color.rgb(48, 64, 54), Color.rgb(26, 40, 34),
-                Color.rgb(200, 210, 220), 0.2f, 0.14f, 0f, 1, 0.25f, Color.argb(60, 30, 40, 55)),
-            Weather("Snow", Color.rgb(150, 168, 196), Color.rgb(186, 200, 220), Color.rgb(226, 234, 244),
-                Color.rgb(196, 208, 220), Color.rgb(150, 168, 186),
-                Color.rgb(255, 252, 245), 0.7f, 0.15f, 0f, 2, 0.2f, Color.argb(30, 220, 235, 255)),
-            Weather("Fog", Color.rgb(150, 154, 158), Color.rgb(176, 180, 184), Color.rgb(206, 208, 210),
-                Color.rgb(120, 138, 120), Color.rgb(86, 104, 90),
-                Color.rgb(230, 230, 230), 0.3f, 0.14f, 0f, 0, 0.7f, Color.argb(40, 200, 205, 210))
+            dayWeather(),
+            Weather("Sunset", Color.rgb(58, 42, 96), Color.rgb(214, 104, 96), Color.rgb(252, 182, 104),
+                Color.rgb(96, 78, 84), Color.rgb(54, 42, 50), Color.rgb(120, 92, 104),
+                Color.rgb(255, 170, 96), 1f, 0.22f, 0.15f, 0, 0f, Color.argb(36, 255, 120, 40)),
+            Weather("Night", Color.rgb(8, 12, 32), Color.rgb(18, 24, 54), Color.rgb(40, 48, 86),
+                Color.rgb(26, 30, 46), Color.rgb(14, 18, 30), Color.rgb(30, 36, 58),
+                Color.rgb(236, 240, 250), 0.95f, 0.13f, 1f, 0, 0f, Color.argb(90, 10, 16, 48)),
+            Weather("Dawn", Color.rgb(82, 104, 160), Color.rgb(200, 156, 184), Color.rgb(255, 214, 176),
+                Color.rgb(86, 96, 110), Color.rgb(52, 62, 76), Color.rgb(108, 112, 134),
+                Color.rgb(255, 226, 200), 0.9f, 0.15f, 0.3f, 0, 0f, Color.argb(28, 255, 180, 150)),
+            Weather("Rain", Color.rgb(54, 62, 74), Color.rgb(78, 88, 100), Color.rgb(116, 126, 136),
+                Color.rgb(58, 66, 72), Color.rgb(32, 40, 46), Color.rgb(64, 72, 84),
+                Color.rgb(200, 210, 220), 0.4f, 0.14f, 0.45f, 1, 0.25f, Color.argb(60, 30, 40, 55)),
+            Weather("Snow", Color.rgb(150, 168, 196), Color.rgb(186, 200, 220), Color.rgb(224, 232, 242),
+                Color.rgb(180, 190, 204), Color.rgb(138, 152, 168), Color.rgb(150, 162, 182),
+                Color.rgb(255, 252, 245), 0.7f, 0.15f, 0.2f, 2, 0.2f, Color.argb(26, 220, 235, 255)),
+            Weather("Fog", Color.rgb(150, 154, 158), Color.rgb(176, 180, 184), Color.rgb(204, 206, 208),
+                Color.rgb(120, 126, 130), Color.rgb(84, 92, 96), Color.rgb(132, 138, 144),
+                Color.rgb(230, 230, 230), 0.3f, 0.14f, 0.2f, 0, 0.7f, Color.argb(40, 200, 205, 210))
         )
+    }
+
+    private fun buildSkyline() {
+        val list = ArrayList<Building>()
+        var x = -screenW * 0.05f
+        while (x < screenW * 1.05f) {
+            val w = screenW * (0.07f + rng.nextFloat() * 0.09f)
+            val h = horizonY() * (0.25f + rng.nextFloat() * 0.62f)
+            val g = 60 + rng.nextInt(40)
+            list.add(Building(x, w, h, Color.rgb(g, g + 6, g + 16), rng.nextInt(9999)))
+            x += w * (1.02f + rng.nextFloat() * 0.15f)
+        }
+        skyline = list.toTypedArray()
     }
 
     private fun randomizeWeather() {
@@ -242,10 +244,7 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     private fun updateWeather(dt: Float) {
         if (transitioning) {
             weatherBlend += dt / weatherTransition
-            if (weatherBlend >= 1f) {
-                weatherBlend = 1f; wA = wB; transitioning = false
-                weatherTimer = 20f + rng.nextFloat() * 14f
-            }
+            if (weatherBlend >= 1f) { weatherBlend = 1f; wA = wB; transitioning = false; weatherTimer = 20f + rng.nextFloat() * 14f }
         } else {
             weatherTimer -= dt
             if (weatherTimer <= 0f) {
@@ -259,7 +258,6 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
 
     private fun lc(a: Int, b: Int) = lerpColor(a, b, weatherBlend)
     private fun lf(a: Float, b: Float) = a + (b - a) * weatherBlend
-
     private fun lerpColor(a: Int, b: Int, t: Float): Int {
         val tt = t.coerceIn(0f, 1f)
         return Color.argb(
@@ -269,15 +267,12 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
             (Color.blue(a) + (Color.blue(b) - Color.blue(a)) * tt).toInt()
         )
     }
-
+    private fun nightFactor() = lf(wA.night, wB.night)
     private fun rainStrength() = (if (wA.precip == 1) 1 - weatherBlend else 0f) + (if (wB.precip == 1) weatherBlend else 0f)
     private fun snowStrength() = (if (wA.precip == 2) 1 - weatherBlend else 0f) + (if (wB.precip == 2) weatherBlend else 0f)
 
     private fun updatePrecip(dt: Float) {
-        if (rainStrength() > 0.01f) for (d in rain) {
-            d.y += d.speed * dt
-            if (d.y > screenH) { d.y = -d.len; d.x = rng.nextFloat() * screenW }
-        }
+        if (rainStrength() > 0.01f) for (d in rain) { d.y += d.speed * dt; if (d.y > screenH) { d.y = -d.len; d.x = rng.nextFloat() * screenW } }
         if (snowStrength() > 0.01f) for (f in snow) {
             f.y += f.speed * dt
             f.x += sin((uiTime * 1.5f + f.phase).toDouble()).toFloat() * screenW * 0.04f * dt
@@ -296,11 +291,10 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         if (crashFlash > 0f) crashFlash = max(0f, crashFlash - dt * 1.6f)
         updateWeather(dt)
         updateParticles(dt)
-
         when (state) {
             GameState.DEMO -> updateDemo(dt)
             GameState.PLAYING -> updatePlaying(dt)
-            else -> { /* READY / GAME_OVER: world is frozen */ }
+            else -> {}
         }
     }
 
@@ -308,84 +302,69 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         gameTime += dt
         speed = (speed + accel * dt).coerceIn(startSpeed, maxSpeed)
         player.update(dt)
-
         distanceToNextSpawn -= speed * dt
         if (distanceToNextSpawn <= 0f) {
-            if (gameTime > graceTime) spawnRow(false)
-            distanceToNextSpawn += spawnGapZ
+            if (gameTime > graceTime) spawnRow()
+            distanceToNextSpawn += baseGapZ * (0.85f + rng.nextFloat() * 0.6f)  // randomised spacing
         }
         emitPillars(dt)
         advanceAndResolve(dt)
         score += (speed * dt * 60f).toInt()
     }
 
-    /** Auto-playing showcase: a perfect AI clears a slow, scripted sequence. */
     private fun updateDemo(dt: Float) {
         speed = 0.42f
         player.update(dt)
         emitPillars(dt)
-
-        // Spawn one clearly-telegraphed obstacle at a time, cycling the move types.
         demoTimer -= speed * dt
         if (demoTimer <= 0f) {
             val lane = player.collisionLane
             when (demoIndex % 3) {
-                0 -> obstacles.add(Obstacle(lane, zFar, ObstacleType.BARRIER))
-                1 -> obstacles.add(Obstacle(lane, zFar, ObstacleType.OVERHANG))
+                0 -> { obstacles.add(Obstacle(0, zFar, ObstacleType.BARRIER)); obstacles.add(Obstacle(1, zFar, ObstacleType.BARRIER)) }
+                1 -> { obstacles.add(Obstacle(0, zFar, ObstacleType.OVERHANG)); obstacles.add(Obstacle(1, zFar, ObstacleType.OVERHANG)) }
                 else -> obstacles.add(Obstacle(lane, zFar, ObstacleType.BLOCK))
             }
-            val relicLane = (0..2).filter { it != lane }.random(rng)
-            coins.add(Coin(relicLane, zFar))
+            coins.add(Coin(rng.nextInt(2), zFar))
             demoIndex++
-            demoTimer = 0.62f
+            demoTimer = 0.7f
         }
         autopilot()
         advanceAndResolve(dt)
     }
 
-    /** Reacts to the nearest hazard with the correct move — used by the demo. */
     private fun autopilot() {
         val o = obstacles.filter { !it.resolved && it.z > 0f }.minByOrNull { it.z } ?: run {
-            demoCaption = "Skate, dodge and survive!"; return
+            demoCaption = "Race through the city — survive!"; return
         }
-        if (o.z < 0.30f) {
-            when (o.type) {
-                ObstacleType.BARRIER -> { player.jump(); demoCaption = "Swipe UP to jump hurdles" }
-                ObstacleType.OVERHANG -> { player.slide(); demoCaption = "Swipe DOWN to slide under arches" }
-                ObstacleType.BLOCK -> {
-                    val free = (0..2).firstOrNull { l ->
-                        obstacles.none { it.lane == l && it.z in 0f..0.5f && it.type == ObstacleType.BLOCK }
-                    } ?: player.targetLane
-                    player.targetLane = free
-                    demoCaption = "Swipe LEFT / RIGHT to change lanes"
-                }
-            }
+        if (o.z < 0.32f) when (o.type) {
+            ObstacleType.BARRIER -> { player.jump(); demoCaption = "Swipe UP to JUMP barriers" }
+            ObstacleType.OVERHANG -> { player.slide(); demoCaption = "Swipe DOWN to SLIDE under signs" }
+            ObstacleType.BLOCK -> { player.targetLane = 1 - o.lane; demoCaption = "Swipe LEFT / RIGHT to dodge cars" }
         }
     }
 
     private fun emitPillars(dt: Float) {
         pillarTimer -= speed * dt
-        if (pillarTimer <= 0f) {
-            pillars.add(Pillar(if (rng.nextBoolean()) -1 else 1, zFar, 0.7f + rng.nextFloat() * 0.6f))
-            pillarTimer += 0.5f
-        }
+        if (pillarTimer <= 0f) { pillars.add(Pillar(if (rng.nextBoolean()) -1 else 1, zFar, 0.8f + rng.nextFloat() * 0.7f)); pillarTimer += 0.42f }
     }
 
-    private fun spawnRow(easyOverride: Boolean) {
-        val openLane = rng.nextInt(3)
-        val easy = easyOverride || gameTime < graceTime + 7f
-        val roll = if (easy) rng.nextInt(3) else rng.nextInt(6)
-        when (roll) {
-            0 -> obstacles.add(Obstacle(rng.nextInt(3), zFar, ObstacleType.BARRIER))
-            1 -> obstacles.add(Obstacle(rng.nextInt(3), zFar, ObstacleType.OVERHANG))
-            2 -> obstacles.add(Obstacle(rng.nextInt(3), zFar, ObstacleType.BLOCK))
-            3 -> for (l in 0..2) if (l != openLane) obstacles.add(Obstacle(l, zFar, ObstacleType.BLOCK))
-            4 -> for (l in 0..2) if (l != openLane) obstacles.add(Obstacle(l, zFar, ObstacleType.BARRIER))
-            else -> obstacles.add(Obstacle(rng.nextInt(3), zFar, ObstacleType.OVERHANG))
+    /** Weighted toward jump/slide (often spanning BOTH lanes), with cars rarer. */
+    private fun spawnRow() {
+        val roll = rng.nextFloat()
+        when {
+            roll < 0.45f -> {                          // jump
+                if (rng.nextFloat() < 0.6f) { obstacles.add(Obstacle(0, zFar, ObstacleType.BARRIER)); obstacles.add(Obstacle(1, zFar, ObstacleType.BARRIER)) }
+                else obstacles.add(Obstacle(rng.nextInt(2), zFar, ObstacleType.BARRIER))
+            }
+            roll < 0.80f -> {                          // slide
+                if (rng.nextFloat() < 0.6f) { obstacles.add(Obstacle(0, zFar, ObstacleType.OVERHANG)); obstacles.add(Obstacle(1, zFar, ObstacleType.OVERHANG)) }
+                else obstacles.add(Obstacle(rng.nextInt(2), zFar, ObstacleType.OVERHANG))
+            }
+            else -> obstacles.add(Obstacle(rng.nextInt(2), zFar, ObstacleType.BLOCK))  // dodge a car
         }
         val blocked = obstacles.filter { it.z == zFar && it.type == ObstacleType.BLOCK }.map { it.lane }.toSet()
-        val free = (0..2).filter { it !in blocked }
-        if (free.isNotEmpty()) coins.add(Coin(free[rng.nextInt(free.size)], zFar))
+        val free = (0..1).filter { it !in blocked }
+        if (free.isNotEmpty() && rng.nextFloat() < 0.85f) coins.add(Coin(free[rng.nextInt(free.size)], zFar))
     }
 
     private fun advanceAndResolve(dt: Float) {
@@ -412,9 +391,7 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
             if (c.z < zCull) ci.remove()
         }
         val pi = pillars.iterator()
-        while (pi.hasNext()) {
-            val p = pi.next(); p.z -= move; if (p.z < zCull) pi.remove()
-        }
+        while (pi.hasNext()) { val p = pi.next(); p.z -= move; if (p.z < zCull) pi.remove() }
     }
 
     private fun survives(o: Obstacle): Boolean = when (o.type) {
@@ -427,19 +404,15 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         repeat(12) {
             val ang = rng.nextFloat() * 6.2832f
             val sp = (0.6f + rng.nextFloat()) * screenH * 0.5f
-            particles.add(
-                Particle(x, y, cos(ang.toDouble()).toFloat() * sp, sin(ang.toDouble()).toFloat() * sp - screenH * 0.2f,
-                    0.55f, 0.55f, if (rng.nextBoolean()) Color.rgb(255, 224, 130) else Color.rgb(255, 196, 64),
-                    screenW * (0.008f + rng.nextFloat() * 0.01f))
-            )
+            particles.add(Particle(x, y, cos(ang.toDouble()).toFloat() * sp, sin(ang.toDouble()).toFloat() * sp - screenH * 0.2f,
+                0.55f, 0.55f, if (rng.nextBoolean()) Color.rgb(255, 224, 130) else Color.rgb(255, 196, 64), screenW * (0.008f + rng.nextFloat() * 0.01f)))
         }
     }
 
     private fun updateParticles(dt: Float) {
         val it = particles.iterator()
         while (it.hasNext()) {
-            val p = it.next()
-            p.life -= dt
+            val p = it.next(); p.life -= dt
             if (p.life <= 0f) { it.remove(); continue }
             p.x += p.vx * dt; p.y += p.vy * dt; p.vy += screenH * 1.6f * dt
         }
@@ -451,37 +424,27 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     private fun startGame() {
         obstacles.clear(); coins.clear(); pillars.clear(); particles.clear()
         player.reset()
-        speed = startSpeed
-        distanceToNextSpawn = spawnGapZ
+        speed = startSpeed; distanceToNextSpawn = baseGapZ
         pillarTimer = 0f; gameTime = 0f; score = 0; coinCount = 0
         state = GameState.PLAYING
     }
 
     private fun gameOver() {
-        state = GameState.GAME_OVER
-        crashFlash = 1f
+        state = GameState.GAME_OVER; crashFlash = 1f
         if (score > highScore) { highScore = score; prefs.edit().putInt("highScore", highScore).apply() }
     }
 
     private fun onTap() {
         when (state) {
-            GameState.DEMO, GameState.READY, GameState.GAME_OVER -> startGame()
             GameState.PLAYING -> player.jump()
+            else -> startGame()
         }
     }
 
     // ====================================================================================
-    //  Input — drag to steer (cursor-like), swipe up/down to jump/slide
+    //  Input — clean swipes only (no drag), so steering stays controllable
     // ====================================================================================
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        gestureDetector.onTouchEvent(event)
-        if (state == GameState.PLAYING && event.actionMasked == MotionEvent.ACTION_MOVE) {
-            // The board follows your thumb to whichever lane third you point at.
-            val lane = ((event.x / screenW) * 3f).toInt().coerceIn(0, 2)
-            player.targetLane = lane
-        }
-        return true
-    }
+    override fun onTouchEvent(event: MotionEvent): Boolean = gestureDetector.onTouchEvent(event)
 
     private inner class GestureListener : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
@@ -490,11 +453,11 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
             if (state != GameState.PLAYING) { onTap(); return true }
             val dx = e2.x - (e1?.x ?: e2.x)
             val dy = e2.y - (e1?.y ?: e2.y)
-            if (abs(dx) > abs(dy)) {
-                if (dx > 0) player.moveRight() else player.moveLeft()
-            } else {
-                if (dy > 0) player.slide() else player.jump()
-            }
+            // Require a deliberate swipe to avoid accidental triggers.
+            val threshold = screenW * 0.04f
+            if (abs(dx) < threshold && abs(dy) < threshold) return true
+            if (abs(dx) > abs(dy)) { if (dx > 0) player.moveRight() else player.moveLeft() }
+            else { if (dy > 0) player.slide() else player.jump() }
             return true
         }
     }
@@ -514,103 +477,100 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         if (state == GameState.DEMO) drawDemoCaption(canvas)
         if (state == GameState.PLAYING && gameTime < tutorialTime) drawTutorial(canvas)
         drawHud(canvas)
-        if (crashFlash > 0f) {
-            paint.color = Color.argb((crashFlash * 130).toInt(), 200, 40, 40)
-            canvas.drawRect(0f, 0f, screenW, screenH, paint)
-        }
+        if (crashFlash > 0f) { paint.color = Color.argb((crashFlash * 130).toInt(), 200, 40, 40); canvas.drawRect(0f, 0f, screenW, screenH, paint) }
         drawOverlay(canvas)
     }
 
     private fun drawSky(canvas: Canvas) {
         val hy = horizonY()
-        paint.shader = LinearGradient(
-            0f, 0f, 0f, hy,
+        paint.shader = LinearGradient(0f, 0f, 0f, hy,
             intArrayOf(lc(wA.skyTop, wB.skyTop), lc(wA.skyMid, wB.skyMid), lc(wA.skyHorizon, wB.skyHorizon)),
-            floatArrayOf(0f, 0.62f, 1f), Shader.TileMode.CLAMP
-        )
-        canvas.drawRect(0f, 0f, screenW, hy, paint)
-        paint.shader = null
+            floatArrayOf(0f, 0.62f, 1f), Shader.TileMode.CLAMP)
+        canvas.drawRect(0f, 0f, screenW, hy, paint); paint.shader = null
 
-        // Stars (night).
-        val sa = lf(wA.starAlpha, wB.starAlpha)
-        if (sa > 0.02f) for (s in stars) {
+        val nf = nightFactor()
+        if (nf > 0.05f) for (s in stars) {
             val tw = 0.5f + 0.5f * sin((uiTime * 2f + s.phase).toDouble()).toFloat()
-            paint.color = Color.argb((sa * tw * 230).toInt(), 255, 255, 255)
-            canvas.drawCircle(s.x, s.y, s.r, paint)
+            paint.color = Color.argb((nf * tw * 230).toInt(), 255, 255, 255); canvas.drawCircle(s.x, s.y, s.r, paint)
         }
 
-        // Sun / moon.
         val sunA = lf(wA.sunAlpha, wB.sunAlpha)
         if (sunA > 0.02f) {
-            val sx = screenW * 0.72f
-            val sy = hy * 0.40f
-            val r = hy * lf(wA.sunRadius, wB.sunRadius)
-            paint.color = withAlpha(lc(wA.sunColor, wB.sunColor), (sunA * 70).toInt())
-            canvas.drawCircle(sx, sy, r * 2.1f, paint)
-            paint.color = withAlpha(lc(wA.sunColor, wB.sunColor), (sunA * 255).toInt())
-            canvas.drawCircle(sx, sy, r, paint)
+            val sx = screenW * 0.74f; val sy = hy * 0.34f; val r = hy * lf(wA.sunRadius, wB.sunRadius)
+            paint.color = withAlpha(lc(wA.sunColor, wB.sunColor), (sunA * 70).toInt()); canvas.drawCircle(sx, sy, r * 2.1f, paint)
+            paint.color = withAlpha(lc(wA.sunColor, wB.sunColor), (sunA * 255).toInt()); canvas.drawCircle(sx, sy, r, paint)
         }
 
-        // Mountain ridge + temple landmark.
-        paint.color = Color.argb(235, 38, 52, 64)
-        val ridge = Path().apply {
-            moveTo(0f, hy); var x = 0f; val step = screenW / 8f; var i = 0
-            while (x <= screenW) {
-                val peak = hy - (0.10f + 0.06f * (1 + sin((i * 1.3f).toDouble()).toFloat())) * screenH
-                lineTo(x + step * 0.5f, peak); lineTo(x + step, hy); x += step; i++
-            }
-            lineTo(screenW, hy); close()
+        // City skyline along the horizon, with lit windows at night.
+        val tint = lc(wA.buildingTint, wB.buildingTint)
+        for (b in skyline) {
+            val top = hy - b.height
+            paint.color = lerpColor(b.color, tint, 0.5f)
+            canvas.drawRect(b.left, top, b.left + b.width, hy, paint)
+            drawWindows(canvas, b.left, top, b.left + b.width, hy, b.seed, nf, b.width * 0.18f, b.width * 0.28f)
+            // rooftop highlight
+            paint.color = Color.argb(50, 255, 255, 255)
+            canvas.drawRect(b.left, top, b.left + b.width, top + b.height * 0.03f, paint)
         }
-        canvas.drawPath(ridge, paint)
-        paint.color = Color.argb(235, 50, 64, 74)
-        val px = screenW * 0.30f; var ty = hy; var tw = screenW * 0.22f
-        repeat(4) { val th = hy * 0.07f; canvas.drawRect(px - tw / 2f, ty - th, px + tw / 2f, ty, paint); ty -= th; tw *= 0.74f }
+    }
+
+    private fun drawWindows(canvas: Canvas, l: Float, t: Float, r: Float, b: Float, seed: Int, night: Float, cw: Float, ch: Float) {
+        val cols = max(1, ((r - l) / cw).toInt())
+        val rows = max(2, ((b - t) / ch).toInt())
+        val gw = (r - l) / cols; val gh = (b - t) / rows
+        val wM = gw * 0.28f; val hM = gh * 0.28f
+        for (cc in 0 until cols) for (rr in 0 until rows) {
+            val lit = ((seed + cc * 7 + rr * 13) % 7) < 3
+            paint.color = if (night > 0.25f && lit)
+                Color.argb((night * 230).toInt(), 255, 224, 150)
+            else Color.argb(70, 20, 26, 36)
+            val wl = l + cc * gw + wM; val wt = t + rr * gh + hM
+            canvas.drawRect(wl, wt, wl + gw - 2 * wM, wt + gh - 2 * hM, paint)
+        }
     }
 
     private fun drawGroundAndRoad(canvas: Canvas) {
         val hy = horizonY(); val by = groundBottomY()
-        paint.shader = LinearGradient(0f, hy, 0f, screenH,
-            lc(wA.groundTop, wB.groundTop), lc(wA.groundBottom, wB.groundBottom), Shader.TileMode.CLAMP)
-        canvas.drawRect(0f, hy, screenW, screenH, paint)
-        paint.shader = null
+        paint.shader = LinearGradient(0f, hy, 0f, screenH, lc(wA.groundTop, wB.groundTop), lc(wA.groundBottom, wB.groundBottom), Shader.TileMode.CLAMP)
+        canvas.drawRect(0f, hy, screenW, screenH, paint); paint.shader = null
 
-        val nearL = laneXAt(-0.5f, 0f); val nearR = laneXAt(2.5f, 0f)
-        val farL = laneXAt(-0.5f, zFar); val farR = laneXAt(2.5f, zFar)
-        paint.color = Color.rgb(86, 66, 48)
+        val nearL = laneXAt(-0.6f, 0f); val nearR = laneXAt(1.6f, 0f)
+        val farL = laneXAt(-0.6f, zFar); val farR = laneXAt(1.6f, zFar)
+        // Asphalt.
+        paint.color = Color.rgb(46, 48, 54)
         canvas.drawPath(Path().apply { moveTo(farL, hy); lineTo(farR, hy); lineTo(nearR, by); lineTo(nearL, by); close() }, paint)
-
-        paint.color = Color.rgb(98, 76, 56)
-        canvas.drawPath(Path().apply {
-            moveTo(laneXAt(0.5f, zFar), hy); lineTo(laneXAt(1.5f, zFar), hy)
-            lineTo(laneXAt(1.5f, 0f), by); lineTo(laneXAt(0.5f, 0f), by); close()
-        }, paint)
-
-        paint.color = Color.rgb(150, 120, 80)
-        paint.strokeWidth = max(3f, screenW * 0.012f)
-        canvas.drawLine(farL, hy, nearL, by, paint)
-        canvas.drawLine(farR, hy, nearR, by, paint)
-
-        paint.color = Color.argb(140, 200, 170, 120)
-        paint.strokeWidth = max(2f, screenW * 0.005f)
-        for (d in floatArrayOf(0.5f, 1.5f)) canvas.drawLine(laneXAt(d, zFar), hy, laneXAt(d, 0f), by, paint)
-
-        paint.color = Color.argb(90, 60, 44, 30)
-        var z = zFar - (roadScroll * 0.16f)
+        // Kerb lines.
+        paint.color = Color.rgb(210, 210, 214); paint.strokeWidth = max(3f, screenW * 0.012f)
+        canvas.drawLine(farL, hy, nearL, by, paint); canvas.drawLine(farR, hy, nearR, by, paint)
+        // Dashed yellow centre line between the two lanes.
+        paint.color = Color.rgb(232, 196, 64); paint.strokeCap = Paint.Cap.ROUND
+        var z = zFar - (roadScroll * 0.22f)
         while (z > 0f) {
-            val y = groundYAt(z); paint.strokeWidth = max(1.5f, 8f * scaleAt(z))
-            canvas.drawLine(laneXAt(-0.5f, z), y, laneXAt(2.5f, z), y, paint); z -= 0.16f
+            val z2 = z - 0.07f
+            if (z2 > 0f) {
+                val y1 = groundYAt(z); val y2 = groundYAt(z2)
+                paint.strokeWidth = max(2f, screenW * 0.018f * scaleAt(z))
+                canvas.drawLine(laneXAt(0.5f, z), y1, laneXAt(0.5f, z2), y2, paint)
+            }
+            z -= 0.22f
         }
+        paint.strokeCap = Paint.Cap.BUTT
     }
 
     private fun drawScenery(canvas: Canvas) {
+        // Side buildings approach the camera, forming a city corridor.
         for (p in pillars.sortedByDescending { it.z }) {
             if (p.z <= 0f) continue
             val s = scaleAt(p.z); val baseY = groundYAt(p.z)
-            val x = laneXAt(if (p.side < 0) -1.35f else 3.35f, p.z)
-            val w = screenW * 0.11f * s; val h = screenH * 0.55f * s * p.height
-            paint.color = Color.rgb(120, 112, 96); canvas.drawRect(x - w / 2f, baseY - h, x + w / 2f, baseY, paint)
-            paint.color = Color.rgb(92, 86, 72); canvas.drawRect(x - w / 2f, baseY - h, x - w / 2f + w * 0.32f, baseY, paint)
-            paint.color = Color.rgb(74, 116, 70); canvas.drawRect(x - w / 2f * 1.15f, baseY - h, x + w / 2f * 1.15f, baseY - h + h * 0.08f, paint)
+            val x = laneXAt(if (p.side < 0) -1.5f else 2.5f, p.z)
+            val w = screenW * 0.34f * s; val h = screenH * 0.78f * s * p.height
+            val left = if (p.side < 0) x - w else x
+            val right = left + w; val top = baseY - h
+            val tint = lc(wA.buildingTint, wB.buildingTint)
+            paint.color = tint; canvas.drawRect(left, top, right, baseY, paint)
+            paint.color = Color.argb(60, 0, 0, 0)
+            canvas.drawRect(if (p.side < 0) right - w * 0.3f else left, top, if (p.side < 0) right else left + w * 0.3f, baseY, paint)
+            drawWindows(canvas, left, top, right, baseY, (p.z * 1000).toInt(), nightFactor(), w * 0.22f, screenH * 0.06f * s)
         }
     }
 
@@ -625,56 +585,72 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
 
     private fun drawObstacle(canvas: Canvas, o: Obstacle) {
         val s = scaleAt(o.z); val baseY = groundYAt(o.z); val cx = laneXAt(o.lane.toFloat(), o.z)
-        val w = laneSpacing() * 0.72f * s
+        val w = laneSpacing() * 0.82f * s
         outline.strokeWidth = max(1.5f, 2.5f * s)
         when (o.type) {
             ObstacleType.BARRIER -> {
                 val h = screenH * 0.11f * s; val top = baseY - h
-                paint.color = Color.rgb(60, 48, 36)
-                canvas.drawRect(cx - w / 2f, top, cx - w / 2f + w * 0.1f, baseY, paint)
-                canvas.drawRect(cx + w / 2f - w * 0.1f, top, cx + w / 2f, baseY, paint)
+                paint.color = Color.rgb(70, 60, 52)
+                canvas.drawRect(cx - w / 2f, top + h * 0.5f, cx - w / 2f + w * 0.1f, baseY, paint)
+                canvas.drawRect(cx + w / 2f - w * 0.1f, top + h * 0.5f, cx + w / 2f, baseY, paint)
                 val barBot = top + h * 0.5f
-                paint.color = Color.rgb(240, 196, 64); canvas.drawRect(cx - w / 2f, top, cx + w / 2f, barBot, paint)
-                paint.color = Color.rgb(40, 36, 32)
+                paint.color = Color.rgb(244, 130, 40); canvas.drawRect(cx - w / 2f, top, cx + w / 2f, barBot, paint)
+                paint.color = Color.rgb(238, 238, 240)
                 var sx = cx - w / 2f; val stripeW = w * 0.16f; var i = 0
-                while (sx < cx + w / 2f) {
-                    if (i % 2 == 0) canvas.drawRect(sx, top, (sx + stripeW).coerceAtMost(cx + w / 2f), barBot, paint)
-                    sx += stripeW; i++
-                }
+                while (sx < cx + w / 2f) { if (i % 2 == 0) canvas.drawRect(sx, top, (sx + stripeW).coerceAtMost(cx + w / 2f), barBot, paint); sx += stripeW; i++ }
                 canvas.drawRect(cx - w / 2f, top, cx + w / 2f, barBot, outline)
             }
             ObstacleType.OVERHANG -> {
-                val gap = screenH * 0.14f * s; val beamH = screenH * 0.11f * s; val top = baseY - gap - beamH
-                paint.color = Color.rgb(168, 162, 150); canvas.drawRect(cx - w / 2f, top, cx + w / 2f, top + beamH, paint)
-                paint.color = Color.rgb(132, 126, 116); canvas.drawRect(cx - w / 2f, top + beamH * 0.6f, cx + w / 2f, top + beamH, paint)
-                paint.color = Color.rgb(120, 114, 104)
-                canvas.drawRect(cx - w / 2f, top, cx - w / 2f + w * 0.14f, baseY, paint)
-                canvas.drawRect(cx + w / 2f - w * 0.14f, top, cx + w / 2f, baseY, paint)
+                val gap = screenH * 0.14f * s; val beamH = screenH * 0.115f * s; val top = baseY - gap - beamH
+                paint.color = Color.rgb(74, 84, 96); canvas.drawRect(cx - w / 2f, top, cx + w / 2f, top + beamH, paint)
+                paint.color = Color.rgb(40, 120, 180); canvas.drawRect(cx - w * 0.32f, top + beamH * 0.18f, cx + w * 0.32f, top + beamH * 0.82f, paint)
+                paint.color = Color.rgb(90, 100, 112)
+                canvas.drawRect(cx - w / 2f, top, cx - w / 2f + w * 0.1f, baseY, paint)
+                canvas.drawRect(cx + w / 2f - w * 0.1f, top, cx + w / 2f, baseY, paint)
                 canvas.drawRect(cx - w / 2f, top, cx + w / 2f, top + beamH, outline)
             }
-            ObstacleType.BLOCK -> {
-                val h = screenH * 0.27f * s; val top = baseY - h
-                paint.color = Color.rgb(96, 80, 120); canvas.drawRect(cx - w / 2f, top, cx + w / 2f, baseY, paint)
-                paint.color = Color.rgb(70, 56, 92); canvas.drawRect(cx - w / 2f, top, cx - w / 2f + w * 0.32f, baseY, paint)
-                paint.color = Color.rgb(126, 110, 150); canvas.drawRect(cx - w / 2f, top, cx + w / 2f, top + h * 0.12f, paint)
-                paint.color = Color.argb(80, 40, 30, 56); paint.strokeWidth = max(1f, 1.6f * s)
-                canvas.drawLine(cx - w / 2f, top + h * 0.5f, cx + w / 2f, top + h * 0.5f, paint)
-                canvas.drawLine(cx, top + h * 0.12f, cx, top + h * 0.5f, paint)
-                canvas.drawRect(cx - w / 2f, top, cx + w / 2f, baseY, outline)
-            }
+            ObstacleType.BLOCK -> drawCar(canvas, cx, baseY, w, s)
         }
+    }
+
+    /** A parked car seen from behind — the dodge obstacle. */
+    private fun drawCar(canvas: Canvas, cx: Float, baseY: Float, w: Float, s: Float) {
+        val bodyH = screenH * 0.10f * s
+        val cabinH = screenH * 0.075f * s
+        val carW = w * 1.02f
+        val top = baseY - bodyH - cabinH
+        val wheelR = bodyH * 0.42f
+        paint.color = Color.rgb(30, 30, 34)
+        canvas.drawCircle(cx - carW * 0.32f, baseY, wheelR, paint)
+        canvas.drawCircle(cx + carW * 0.32f, baseY, wheelR, paint)
+        // Cabin.
+        paint.color = Color.rgb(196, 64, 60)
+        canvas.drawRoundRect(RectF(cx - carW * 0.34f, top, cx + carW * 0.34f, top + cabinH), carW * 0.06f, carW * 0.06f, paint)
+        // Rear window.
+        paint.color = Color.rgb(150, 200, 225)
+        canvas.drawRoundRect(RectF(cx - carW * 0.27f, top + cabinH * 0.18f, cx + carW * 0.27f, top + cabinH * 0.78f), carW * 0.03f, carW * 0.03f, paint)
+        // Body.
+        paint.color = Color.rgb(214, 74, 68)
+        canvas.drawRoundRect(RectF(cx - carW / 2f, top + cabinH * 0.7f, cx + carW / 2f, baseY - wheelR * 0.3f), carW * 0.08f, carW * 0.08f, paint)
+        paint.color = Color.rgb(160, 48, 44)
+        canvas.drawRect(cx - carW / 2f, baseY - wheelR * 0.9f, cx + carW / 2f, baseY - wheelR * 0.3f, paint)
+        // Tail lights.
+        paint.color = Color.rgb(255, 90, 70)
+        canvas.drawRoundRect(RectF(cx - carW * 0.46f, top + cabinH * 0.95f, cx - carW * 0.34f, top + cabinH * 1.25f), 3f, 3f, paint)
+        canvas.drawRoundRect(RectF(cx + carW * 0.34f, top + cabinH * 0.95f, cx + carW * 0.46f, top + cabinH * 1.25f), 3f, 3f, paint)
+        outline.strokeWidth = max(1.5f, 2.5f * s)
+        canvas.drawRoundRect(RectF(cx - carW / 2f, top + cabinH * 0.7f, cx + carW / 2f, baseY - wheelR * 0.3f), carW * 0.08f, carW * 0.08f, outline)
     }
 
     private fun drawCoin(canvas: Canvas, c: Coin) {
         val s = scaleAt(c.z); val baseY = groundYAt(c.z); val cx = laneXAt(c.lane.toFloat(), c.z)
         val bob = sin((uiTime * 3f + c.z * 6f).toDouble()).toFloat() * screenH * 0.012f * s
         val cy = baseY - screenH * 0.10f * s + bob; val r = screenW * 0.05f * s
-        val spin = abs(cos((uiTime * 4f + c.z * 8f).toDouble()).toFloat()); val rx = r * (0.25f + 0.75f * spin)
-        paint.color = Color.argb(70, 255, 220, 120); canvas.drawCircle(cx, cy, r * 1.5f, paint)
-        paint.color = Color.rgb(255, 214, 74)
-        canvas.drawPath(Path().apply { moveTo(cx, cy - r); lineTo(cx + rx, cy); lineTo(cx, cy + r); lineTo(cx - rx, cy); close() }, paint)
-        paint.color = Color.rgb(255, 240, 180)
-        canvas.drawPath(Path().apply { moveTo(cx, cy - r); lineTo(cx + rx, cy); lineTo(cx, cy); lineTo(cx - rx, cy); close() }, paint)
+        val spin = abs(cos((uiTime * 4f + c.z * 8f).toDouble()).toFloat()); val rx = r * (0.2f + 0.8f * spin)
+        paint.color = Color.argb(70, 255, 220, 120); canvas.drawOval(RectF(cx - rx * 1.5f, cy - r * 1.5f, cx + rx * 1.5f, cy + r * 1.5f), paint)
+        paint.color = Color.rgb(247, 196, 52); canvas.drawOval(RectF(cx - rx, cy - r, cx + rx, cy + r), paint)
+        paint.color = Color.rgb(255, 226, 120); canvas.drawOval(RectF(cx - rx * 0.6f, cy - r * 0.6f, cx + rx * 0.6f, cy + r * 0.6f), paint)
+        paint.color = Color.argb(220, 255, 255, 255); canvas.drawOval(RectF(cx - rx * 0.3f, cy - r * 0.5f, cx + rx * 0.05f, cy - r * 0.05f), paint)
     }
 
     /** The skater: a leaning rider on a board with spinning wheels. */
@@ -683,63 +659,59 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         val baseY = groundYAt(0f) - screenH * 0.02f
         val cx = laneXAt(player.laneFrac, 0f)
         val jump = player.height * screenH * 0.30f
-        val lean = (player.targetLane - player.laneFrac) * 0.5f   // tilt into turns
-        val bodyW = screenW * 0.11f
-        var bodyH = screenH * 0.17f
+        val lean = (player.targetLane - player.laneFrac)
+        val bodyW = screenW * 0.115f
+        var bodyH = screenH * 0.18f
         if (player.isSliding) bodyH *= 0.5f
-        val feetY = baseY - jump
-        val topY = feetY - bodyH
+        val feetY = baseY - jump; val topY = feetY - bodyH
         val sway = sin(runCycle.toDouble()).toFloat()
 
-        // Shadow.
         paint.color = Color.argb((120 * (1f - player.height).coerceIn(0.25f, 1f)).toInt(), 0, 0, 0)
-        canvas.drawOval(RectF(cx - bodyW * 0.95f, baseY - bodyW * 0.14f, cx + bodyW * 0.95f, baseY + bodyW * 0.2f), paint)
+        canvas.drawOval(RectF(cx - bodyW, baseY - bodyW * 0.14f, cx + bodyW, baseY + bodyW * 0.2f), paint)
 
         canvas.save()
-        canvas.rotate(lean * 16f, cx, feetY)
+        canvas.rotate(lean * 14f, cx, feetY)
 
-        // Skateboard: deck + two spinning wheels.
-        val deckW = bodyW * 1.7f; val deckH = bodyH * 0.12f; val deckY = feetY + deckH * 0.2f
-        paint.color = Color.rgb(232, 90, 70)
+        // Skateboard.
+        val deckW = bodyW * 1.8f; val deckH = bodyH * 0.11f; val deckY = feetY + deckH * 0.2f
+        paint.color = Color.rgb(60, 200, 220)
         canvas.drawRoundRect(RectF(cx - deckW / 2f, deckY, cx + deckW / 2f, deckY + deckH), deckH, deckH, paint)
-        paint.color = Color.rgb(180, 60, 48)
+        paint.color = Color.rgb(36, 150, 168)
         canvas.drawRoundRect(RectF(cx - deckW / 2f, deckY + deckH * 0.55f, cx + deckW / 2f, deckY + deckH), deckH, deckH, paint)
-        val wheelR = deckH * 0.7f
-        paint.color = Color.rgb(245, 235, 220)
+        val wheelR = deckH * 0.7f; paint.color = Color.rgb(245, 235, 220)
         for (wx in floatArrayOf(cx - deckW * 0.33f, cx + deckW * 0.33f)) {
             canvas.drawCircle(wx, deckY + deckH + wheelR * 0.6f, wheelR, paint)
-            paint.color = Color.rgb(120, 120, 120)
-            val sxp = wx + cos(wheelSpin.toDouble()).toFloat() * wheelR * 0.6f
-            val syp = deckY + deckH + wheelR * 0.6f + sin(wheelSpin.toDouble()).toFloat() * wheelR * 0.6f
-            canvas.drawCircle(sxp, syp, wheelR * 0.25f, paint)
+            paint.color = Color.rgb(110, 110, 110)
+            canvas.drawCircle(wx + cos(wheelSpin.toDouble()).toFloat() * wheelR * 0.5f, deckY + deckH + wheelR * 0.6f + sin(wheelSpin.toDouble()).toFloat() * wheelR * 0.5f, wheelR * 0.25f, paint)
             paint.color = Color.rgb(245, 235, 220)
         }
 
-        // Back leg + arm.
-        paint.strokeCap = Paint.Cap.ROUND
-        paint.strokeWidth = bodyW * 0.24f
-        paint.color = Color.rgb(40, 150, 150)
-        canvas.drawLine(cx, topY + bodyH * 0.55f, cx - bodyW * 0.45f, feetY, paint)
-        canvas.drawLine(cx, topY + bodyH * 0.34f, cx - sway * bodyW * 0.5f - bodyW * 0.2f, topY + bodyH * 0.6f, paint)
+        // Back limbs.
+        paint.strokeCap = Paint.Cap.ROUND; paint.strokeWidth = bodyW * 0.26f
+        paint.color = Color.rgb(36, 40, 52)
+        canvas.drawLine(cx, topY + bodyH * 0.58f, cx - bodyW * 0.42f, feetY, paint)              // back leg
+        paint.color = Color.rgb(214, 90, 60)
+        canvas.drawLine(cx, topY + bodyH * 0.34f, cx - sway * bodyW * 0.4f - bodyW * 0.22f, topY + bodyH * 0.62f, paint) // back arm
 
-        // Torso.
-        paint.color = Color.rgb(72, 210, 200)
-        canvas.drawRoundRect(RectF(cx - bodyW / 2f, topY, cx + bodyW / 2f, feetY), bodyW * 0.34f, bodyW * 0.34f, paint)
-        paint.color = Color.rgb(236, 132, 72)
-        canvas.drawRect(cx - bodyW / 2f, topY + bodyH * 0.30f, cx + bodyW / 2f, topY + bodyH * 0.44f, paint)
+        // Torso (hoodie) with zipper highlight.
+        paint.color = Color.rgb(228, 96, 64)
+        canvas.drawRoundRect(RectF(cx - bodyW / 2f, topY, cx + bodyW / 2f, feetY), bodyW * 0.36f, bodyW * 0.36f, paint)
+        paint.color = Color.rgb(255, 150, 110); paint.strokeWidth = bodyW * 0.08f
+        canvas.drawLine(cx, topY + bodyH * 0.18f, cx, feetY - bodyH * 0.1f, paint)
 
-        // Front leg + arm (lifted forward for balance).
-        paint.color = Color.rgb(60, 188, 184)
-        canvas.drawLine(cx, topY + bodyH * 0.55f, cx + bodyW * 0.5f, feetY, paint)
-        canvas.drawLine(cx, topY + bodyH * 0.34f, cx + sway * bodyW * 0.5f + bodyW * 0.45f, topY + bodyH * 0.2f, paint)
+        // Front limbs.
+        paint.strokeWidth = bodyW * 0.26f; paint.color = Color.rgb(50, 54, 68)
+        canvas.drawLine(cx, topY + bodyH * 0.58f, cx + bodyW * 0.5f, feetY, paint)               // front leg
+        paint.color = Color.rgb(232, 110, 78)
+        canvas.drawLine(cx, topY + bodyH * 0.34f, cx + sway * bodyW * 0.4f + bodyW * 0.42f, topY + bodyH * 0.22f, paint) // front arm
 
-        // Head + helmet + goggles.
-        val headR = bodyW * 0.42f; val headCy = topY - headR * 0.55f
+        // Head + hair + face.
+        val headR = bodyW * 0.44f; val headCy = topY - headR * 0.5f
         paint.color = Color.rgb(244, 206, 160); canvas.drawCircle(cx, headCy, headR, paint)
-        paint.color = Color.rgb(60, 80, 200)
-        canvas.drawArc(RectF(cx - headR, headCy - headR, cx + headR, headCy + headR), 180f, 180f, true, paint)
-        paint.color = Color.rgb(150, 220, 255)
-        canvas.drawRect(cx - headR * 0.7f, headCy - headR * 0.1f, cx + headR * 0.7f, headCy + headR * 0.25f, paint)
+        paint.color = Color.rgb(58, 42, 34)
+        canvas.drawArc(RectF(cx - headR, headCy - headR, cx + headR, headCy + headR), 165f, 210f, true, paint)
+        paint.color = Color.rgb(30, 30, 36)
+        canvas.drawCircle(cx + headR * 0.3f, headCy, headR * 0.12f, paint)                        // eye
 
         paint.strokeCap = Paint.Cap.BUTT
         canvas.restore()
@@ -753,36 +725,27 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         }
     }
 
-    /** Foreground weather: rain streaks, snow, fog haze, ambient mood tint. */
     private fun drawWeatherFront(canvas: Canvas) {
         val rs = rainStrength()
         if (rs > 0.01f) {
-            paint.color = Color.argb((rs * 150).toInt(), 200, 215, 235)
-            paint.strokeWidth = max(1.5f, screenW * 0.004f)
-            val n = (rain.size * rs).toInt()
-            for (i in 0 until n) { val d = rain[i]; canvas.drawLine(d.x, d.y, d.x - d.len * 0.18f, d.y + d.len, paint) }
+            paint.color = Color.argb((rs * 150).toInt(), 200, 215, 235); paint.strokeWidth = max(1.5f, screenW * 0.004f)
+            for (i in 0 until (rain.size * rs).toInt()) { val d = rain[i]; canvas.drawLine(d.x, d.y, d.x - d.len * 0.18f, d.y + d.len, paint) }
         }
         val ss = snowStrength()
-        if (ss > 0.01f) {
-            for (i in 0 until (snow.size * ss).toInt()) {
-                val f = snow[i]; paint.color = Color.argb((ss * 230).toInt(), 255, 255, 255)
-                canvas.drawCircle(f.x, f.y, f.r, paint)
-            }
+        if (ss > 0.01f) for (i in 0 until (snow.size * ss).toInt()) {
+            val f = snow[i]; paint.color = Color.argb((ss * 230).toInt(), 255, 255, 255); canvas.drawCircle(f.x, f.y, f.r, paint)
         }
         val fog = lf(wA.fog, wB.fog)
         if (fog > 0.01f) {
             paint.shader = LinearGradient(0f, horizonY(), 0f, screenH,
-                Color.argb((fog * 200).toInt(), 210, 214, 218), Color.argb((fog * 40).toInt(), 210, 214, 218),
-                Shader.TileMode.CLAMP)
+                Color.argb((fog * 200).toInt(), 210, 214, 218), Color.argb((fog * 40).toInt(), 210, 214, 218), Shader.TileMode.CLAMP)
             canvas.drawRect(0f, horizonY(), screenW, screenH, paint); paint.shader = null
         }
         val amb = lerpColor(wA.ambient, wB.ambient, weatherBlend)
         if (Color.alpha(amb) > 0) { paint.color = amb; canvas.drawRect(0f, 0f, screenW, screenH, paint) }
     }
 
-    private fun drawVignette(canvas: Canvas) {
-        paint.shader = vignetteShader; canvas.drawRect(0f, 0f, screenW, screenH, paint); paint.shader = null
-    }
+    private fun drawVignette(canvas: Canvas) { paint.shader = vignetteShader; canvas.drawRect(0f, 0f, screenW, screenH, paint); paint.shader = null }
 
     private fun drawDemoCaption(canvas: Canvas) {
         val by = screenH * 0.13f; val bh = screenH * 0.07f
@@ -792,7 +755,6 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         canvas.drawText("▶ DEMO", screenW / 2f, by + bh * 0.36f, centerText)
         centerText.color = Color.WHITE; centerText.textSize = screenH * 0.028f
         canvas.drawText(demoCaption, screenW / 2f, by + bh * 0.82f, centerText)
-
         val pulse = 0.6f + 0.4f * sin(uiTime * 3.0).toFloat()
         centerText.color = Color.argb((pulse * 255).toInt(), 255, 255, 255); centerText.textSize = screenH * 0.034f
         canvas.drawText("TAP TO PLAY", screenW / 2f, screenH * 0.9f, centerText)
@@ -801,22 +763,21 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     private fun drawTutorial(canvas: Canvas) {
         data class Tip(val s: Float, val e: Float, val t: String)
         val tips = listOf(
-            Tip(0f, 3f, "Drag your thumb ◀ ▶ to steer between lanes"),
-            Tip(3f, 6f, "▲  Swipe up to JUMP the striped hurdles"),
-            Tip(6f, 9f, "▼  Swipe down to SLIDE under arches"),
-            Tip(9f, tutorialTime, "Dodge tall blocks • grab relics • survive!")
+            Tip(0f, 3f, "◀ ▶  Swipe left / right to switch lane"),
+            Tip(3f, 6f, "▲  Swipe up to JUMP barriers"),
+            Tip(6f, 9f, "▼  Swipe down to SLIDE under signs"),
+            Tip(9f, tutorialTime, "Grab coins • dodge cars • survive!")
         )
         val tip = tips.firstOrNull { gameTime >= it.s && gameTime < it.e } ?: return
         val local = gameTime - tip.s; val span = tip.e - tip.s
         val alpha = (min(local, min(span - local, 0.4f)) / 0.4f).coerceIn(0f, 1f)
         val by = screenH * 0.20f; val bh = screenH * 0.075f
-        paint.color = Color.argb((alpha * 165).toInt(), 12, 22, 18)
+        paint.color = Color.argb((alpha * 170).toInt(), 12, 22, 18)
         canvas.drawRoundRect(RectF(screenW * 0.06f, by, screenW * 0.94f, by + bh), bh * 0.3f, bh * 0.3f, paint)
         centerText.color = Color.argb((alpha * 255).toInt(), 255, 240, 200); centerText.textSize = screenH * 0.027f
         canvas.drawText(tip.t, screenW / 2f, by + bh * 0.64f, centerText)
-        textPaint.textAlign = Paint.Align.CENTER; textPaint.textSize = screenH * 0.023f
-        textPaint.color = Color.argb(200, 230, 230, 230)
-        canvas.drawText("drag to steer    ↑ jump    ↓ slide", screenW / 2f, screenH * 0.93f, textPaint)
+        textPaint.textAlign = Paint.Align.CENTER; textPaint.textSize = screenH * 0.023f; textPaint.color = Color.argb(200, 230, 230, 230)
+        canvas.drawText("← → lane    ↑ jump    ↓ slide", screenW / 2f, screenH * 0.93f, textPaint)
         textPaint.textAlign = Paint.Align.LEFT; textPaint.textSize = screenH * 0.030f; textPaint.color = Color.WHITE
     }
 
@@ -825,7 +786,7 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
         textPaint.textAlign = Paint.Align.LEFT; textPaint.color = Color.WHITE
         canvas.drawText("Score  $score", screenW * 0.05f, screenH * 0.07f, textPaint)
         textPaint.textAlign = Paint.Align.RIGHT; textPaint.color = Color.rgb(255, 214, 74)
-        canvas.drawText("◆ $coinCount", screenW * 0.95f, screenH * 0.07f, textPaint)
+        canvas.drawText("● $coinCount", screenW * 0.95f, screenH * 0.07f, textPaint)
         textPaint.color = Color.argb(200, 230, 230, 230); textPaint.textSize = screenH * 0.022f
         canvas.drawText("Best $highScore  •  ${currentWeatherName()}", screenW * 0.95f, screenH * 0.105f, textPaint)
         textPaint.textSize = screenH * 0.030f; textPaint.textAlign = Paint.Align.LEFT; textPaint.color = Color.WHITE
@@ -834,28 +795,21 @@ class GameView(context: Context) : SurfaceView(context), SurfaceHolder.Callback 
     private fun currentWeatherName() = if (transitioning && weatherBlend > 0.5f) wB.name else wA.name
 
     private fun drawOverlay(canvas: Canvas) {
-        when (state) {
-            GameState.GAME_OVER -> {
-                dim(canvas)
-                centerText.color = Color.rgb(236, 96, 80); centerText.textSize = screenH * 0.072f
-                canvas.drawText("GAME OVER", screenW / 2f, screenH * 0.36f, centerText)
-                centerText.color = Color.WHITE; centerText.textSize = screenH * 0.04f
-                canvas.drawText("Score  $score", screenW / 2f, screenH * 0.47f, centerText)
-                canvas.drawText("Relics  $coinCount", screenW / 2f, screenH * 0.525f, centerText)
-                centerText.color = Color.rgb(255, 214, 74)
-                canvas.drawText("Best  $highScore", screenW / 2f, screenH * 0.58f, centerText)
-                val pulse = 0.6f + 0.4f * sin(uiTime * 3.0).toFloat()
-                centerText.color = Color.argb((pulse * 255).toInt(), 255, 255, 255); centerText.textSize = screenH * 0.032f
-                canvas.drawText("TAP TO TRY AGAIN", screenW / 2f, screenH * 0.68f, centerText)
-            }
-            else -> { /* DEMO has its own caption; PLAYING none */ }
+        if (state == GameState.GAME_OVER) {
+            dim(canvas)
+            centerText.color = Color.rgb(236, 96, 80); centerText.textSize = screenH * 0.072f
+            canvas.drawText("GAME OVER", screenW / 2f, screenH * 0.36f, centerText)
+            centerText.color = Color.WHITE; centerText.textSize = screenH * 0.04f
+            canvas.drawText("Score  $score", screenW / 2f, screenH * 0.47f, centerText)
+            canvas.drawText("Coins  $coinCount", screenW / 2f, screenH * 0.525f, centerText)
+            centerText.color = Color.rgb(255, 214, 74)
+            canvas.drawText("Best  $highScore", screenW / 2f, screenH * 0.58f, centerText)
+            val pulse = 0.6f + 0.4f * sin(uiTime * 3.0).toFloat()
+            centerText.color = Color.argb((pulse * 255).toInt(), 255, 255, 255); centerText.textSize = screenH * 0.032f
+            canvas.drawText("TAP TO TRY AGAIN", screenW / 2f, screenH * 0.68f, centerText)
         }
     }
 
-    private fun dim(canvas: Canvas) {
-        paint.color = Color.argb(150, 0, 0, 0); canvas.drawRect(0f, 0f, screenW, screenH, paint)
-    }
-
-    private fun withAlpha(color: Int, a: Int) =
-        Color.argb(a.coerceIn(0, 255), Color.red(color), Color.green(color), Color.blue(color))
+    private fun dim(canvas: Canvas) { paint.color = Color.argb(150, 0, 0, 0); canvas.drawRect(0f, 0f, screenW, screenH, paint) }
+    private fun withAlpha(color: Int, a: Int) = Color.argb(a.coerceIn(0, 255), Color.red(color), Color.green(color), Color.blue(color))
 }

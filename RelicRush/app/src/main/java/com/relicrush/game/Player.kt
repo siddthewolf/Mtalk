@@ -6,20 +6,21 @@ import kotlin.math.roundToInt
 /**
  * The runner. Lives at the z = 0 plane; we only track its lane, vertical jump
  * height and slide state. Lane changes are animated via [laneFrac] for a smooth
- * slide between the three lanes (0 = left, 1 = centre, 2 = right).
+ * glide between the two lanes (0 = left, 1 = right).
  */
 class Player {
 
     companion object {
-        const val LANE_SLIDE_SPEED = 14f      // how fast we lerp between lanes (snappy, cursor-like)
-        const val JUMP_VELOCITY = 2.7f        // initial upward speed (world units/s)
-        const val GRAVITY = -7.4f             // downward accel (world units/s^2)
-        const val JUMP_CLEAR_HEIGHT = 0.16f   // height above which barriers are cleared
-        const val SLIDE_DURATION = 0.55f      // seconds a slide lasts
+        const val MAX_LANE = 1                 // two lanes: 0 and 1
+        const val LANE_SLIDE_SPEED = 12f       // how fast we lerp between lanes
+        const val JUMP_VELOCITY = 2.7f         // initial upward speed (world units/s)
+        const val GRAVITY = -7.4f              // downward accel (world units/s^2)
+        const val JUMP_CLEAR_HEIGHT = 0.16f    // height above which barriers are cleared
+        const val SLIDE_DURATION = 0.55f       // seconds a slide lasts
     }
 
-    var targetLane = 1
-    var laneFrac = 1f
+    var targetLane = 0
+    var laneFrac = 0f
 
     var height = 0f          // 0 = grounded, positive = in the air
     private var vy = 0f
@@ -29,11 +30,11 @@ class Player {
     private var slideTimer = 0f
 
     /** Lane used for collision tests — the lane we're committed to. */
-    val collisionLane: Int get() = laneFrac.roundToInt().coerceIn(0, 2)
+    val collisionLane: Int get() = laneFrac.roundToInt().coerceIn(0, MAX_LANE)
 
     fun reset() {
-        targetLane = 1
-        laneFrac = 1f
+        targetLane = 0
+        laneFrac = 0f
         height = 0f
         vy = 0f
         isJumping = false
@@ -42,7 +43,7 @@ class Player {
     }
 
     fun moveLeft() { if (targetLane > 0) targetLane-- }
-    fun moveRight() { if (targetLane < 2) targetLane++ }
+    fun moveRight() { if (targetLane < MAX_LANE) targetLane++ }
 
     fun jump() {
         if (!isJumping) {
