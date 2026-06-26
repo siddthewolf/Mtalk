@@ -29,6 +29,30 @@ cross-fading during play); building windows light up at night.
 2. Open the editor → **Import** → select this folder's `project.godot`
 3. Press **Play** (F5). Works on desktop with mouse/keyboard.
 
+## Build for iOS (iPhone / iPad)
+
+The **same project** runs on iOS — no code changes. But Apple requires the build
+to be **compiled and signed on a macOS machine with Xcode**, and you need a paid
+**Apple Developer account** ($99/yr). An `iOS` export preset is already defined in
+`export_presets.cfg` (bundle id `com.relicrush.game3d`, portrait, iOS 12+).
+
+On a **Mac**:
+
+1. Install **Xcode** (from the Mac App Store) and **Godot 4.3**.
+2. In Godot: **Editor → Manage Export Templates → Download** the 4.3 templates.
+3. **Editor → Editor Settings → Export → iOS**: nothing required here for a first
+   build, but you'll sign in Xcode.
+4. **Project → Export → iOS** and fill in **App Store Team ID** (your 10-char
+   Apple Developer Team ID — required, the export won't run without it).
+5. **Export Project** → Godot generates an **Xcode project** in the chosen folder.
+6. Open the generated `.xcodeproj` in **Xcode**, select your **Team** under
+   *Signing & Capabilities*, plug in an iPhone (or use a simulator), and press
+   **Run** to install, or **Product → Archive** → upload to **App Store Connect**
+   via the Organizer for TestFlight / the App Store.
+
+> Note: you **cannot** build an iOS app on Windows/Linux — macOS + Xcode is
+> mandatory (it's an Apple requirement, not a Godot one).
+
 ## Replace the blockout art with real 3D models
 
 Everything visual is built in `main.gd` via helpers (`_box`, `_cyl`) and
