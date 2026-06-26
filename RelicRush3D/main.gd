@@ -10,9 +10,9 @@ extends Node3D
 const LANE_X := 1.15          # half-distance between the two lanes
 const SPAWN_Z := -70.0        # how far ahead things appear
 const CULL_Z := 12.0          # behind the camera -> recycle / remove
-const START_SPEED := 9.0      # gentler start
-const MAX_SPEED := 20.0       # lower top speed -> more reaction time
-const ACCEL := 0.30           # slower ramp
+const START_SPEED := 9.0      # gentle start
+const MAX_SPEED := 33.0       # ramps to a fast, demanding top speed
+const ACCEL := 0.38           # gradual but persistent speed-up
 const GRACE := 3.0
 const TUTORIAL_TIME := 10.0
 const GAP_Z := 22.0           # more spacing so the next obstacle isn't on top of you
@@ -202,6 +202,8 @@ func _run_shots() -> void:
 			biome_idx = ["--forest", "--beach", "--desert"].find(arg) + 1
 			biome_timer = 999.0
 			_apply_biome()
+	if "--jet" in OS.get_cmdline_args():
+		jet_t = 999.0
 	await get_tree().create_timer(1.0).timeout
 	for i in range(8):
 		await get_tree().create_timer(0.8).timeout
@@ -1330,7 +1332,7 @@ func _step_player(dt: float) -> void:
 	if jet_t > 0.0:
 		# Jetpack: float above the obstacles.
 		jumping = false; sliding = false
-		p_y = lerp(p_y, 3.2, clamp(dt * 4.0, 0.0, 1.0))
+		p_y = lerp(p_y, 2.5, clamp(dt * 4.0, 0.0, 1.0))
 	else:
 		if jumping:
 			p_y += p_vy * dt
@@ -1358,12 +1360,16 @@ func _animate_player(dt: float) -> void:
 			var want: String = "flying" if jet_t > 0.0 else jog_clip
 			if want != "" and runner_anim.current_animation != want:
 				runner_anim.play(want)
-		runner_anim.speed_scale = 1.0 if jet_t > 0.0 else clamp(_ws() / 11.0, 0.7, 2.6)
+		runner_anim.speed_scale = 1.1 if jet_t > 0.0 else clamp(_ws() / 11.0, 0.7, 3.2)
 	var in_tank := tank_t > 0.0
 	if runner_model != null:
 		runner_model.visible = not in_tank
 		var target_sy: float = 0.5 if sliding else 1.0
 		runner_model.scale.y = lerp(runner_model.scale.y, target_sy, clamp(dt * 14.0, 0.0, 1.0))
+		# Lean into flight while the jetpack is active.
+		var tilt: float = -55.0 if jet_t > 0.0 else 0.0
+		var rx: float = lerp(runner_model.rotation_degrees.x, tilt, clamp(dt * 6.0, 0.0, 1.0))
+		runner_model.rotation_degrees = Vector3(rx, 180.0, 0.0)
 	if tank_model != null:
 		tank_model.visible = in_tank
 	if gun_model != null:
