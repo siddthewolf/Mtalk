@@ -226,18 +226,24 @@ func _flat(col: Color) -> StandardMaterial3D:
 	return m
 
 func _pbr_mat(base: String, tile: Vector2, ao := false) -> StandardMaterial3D:
-	# Realistic CC0 material (ambientCG) with colour, roughness and optional AO.
+	# Realistic CC0 material (ambientCG): colour + roughness + normal (+ AO).
 	var m := StandardMaterial3D.new()
 	m.albedo_texture = load("res://assets/pbr/%s_color.jpg" % base)
 	var r = load("res://assets/pbr/%s_rough.jpg" % base)
 	if r != null:
 		m.roughness_texture = r
 		m.roughness = 1.0
+	var nrm = load("res://assets/pbr/%s_normal.jpg" % base)
+	if nrm != null:
+		m.normal_enabled = true
+		m.normal_texture = nrm
+		m.normal_scale = 1.0
 	if ao:
 		var a = load("res://assets/pbr/%s_ao.jpg" % base)
 		if a != null:
 			m.ao_enabled = true
 			m.ao_texture = a
+			m.ao_light_affect = 0.5
 	m.uv1_scale = Vector3(tile.x, tile.y, 1.0)
 	return m
 
@@ -481,13 +487,15 @@ func _build_effects() -> void:
 	pm.size = Vector2(24, 260)
 	wp.mesh = pm
 	var wm := StandardMaterial3D.new()
-	wm.albedo_color = Color(0.2, 0.5, 0.78, 0.55)
+	wm.albedo_color = Color(0.18, 0.46, 0.72, 0.6)
 	wm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	wm.metallic = 0.3
-	wm.roughness = 0.08
+	wm.metallic = 0.2
+	wm.roughness = 0.04          # glossy, reflects the sky
+	wm.rim_enabled = true
+	wm.rim = 0.6
 	wm.emission_enabled = true
-	wm.emission = Color(0.12, 0.3, 0.5)
-	wm.emission_energy_multiplier = 0.25
+	wm.emission = Color(0.1, 0.28, 0.46)
+	wm.emission_energy_multiplier = 0.2
 	wp.material_override = wm
 	wp.position = Vector3(-18, 0.06, -90)
 	water_plane.add_child(wp)
@@ -1137,7 +1145,6 @@ func _advance(dt: float) -> void:
 
 func _activate_powerup(type: String) -> void:
 	_play(sfx_coin)
-	highlight_t = 1.4   # cinematic camera highlight
 	match type:
 		"shield": shield_t = POWERUP_TIME
 		"magnet": magnet_t = POWERUP_TIME
@@ -1223,17 +1230,8 @@ func _animate_player(dt: float) -> void:
 			shield_bubble.rotation.y += dt * 2.0
 
 func _update_camera(dt: float) -> void:
-	if highlight_t > 0.0:
-		# Cinematic swing around the player to show off the power-up.
-		highlight_t = max(0.0, highlight_t - dt)
-		var t: float = 1.0 - highlight_t / 1.4
-		var desired := Vector3(p_x + sin(t * PI * 1.1) * 3.6, 1.9, 3.0)
-		cam.position = cam.position.lerp(desired, clamp(dt * 8.0, 0.0, 1.0))
-		cam.look_at(Vector3(p_x, 1.1, 0.0), Vector3.UP)
-	else:
-		var desired := Vector3(lerp(cam.position.x, p_x * 0.4, clamp(dt * 6.0, 0.0, 1.0)), 4.4, 7.8)
-		cam.position = cam.position.lerp(desired, clamp(dt * 5.0, 0.0, 1.0))
-		cam.look_at(Vector3(p_x * 0.2, 1.0, -28.0), Vector3.UP)
+	# Steady follow camera (no cinematic swing).
+	cam.position.x = lerp(cam.position.x, p_x * 0.4, clamp(dt * 6.0, 0.0, 1.0))
 
 
 # ==============================================================================
