@@ -16,8 +16,8 @@ const ACCEL := 0.30           # slower ramp
 const GRACE := 3.0
 const TUTORIAL_TIME := 10.0
 const GAP_Z := 22.0           # more spacing so the next obstacle isn't on top of you
-const JUMP_VELOCITY := 6.6    # snappier hop
-const GRAVITY := -22.0        # short, controlled air time (~0.6 s)
+const JUMP_VELOCITY := 8.5    # higher hop...
+const GRAVITY := -28.0        # ...but strong gravity keeps air time short (~0.6 s)
 const JUMP_CLEAR := 0.6
 const SLIDE_TIME := 0.7
 const WEATHER_FADE := 5.0
@@ -75,6 +75,15 @@ var sfx_coin: AudioStreamPlayer
 var sfx_jump: AudioStreamPlayer
 var sfx_slide: AudioStreamPlayer
 var sfx_crash: AudioStreamPlayer
+var sfx_thunder: AudioStreamPlayer
+
+# Storm / tornado / lightning
+var lightning_flash := 0.0
+var lightning_timer := 3.0
+var bolt_timer := 0.0
+var bolt: Node3D
+var tornado: Node3D
+var flash_rect: ColorRect
 
 var obstacles: Array = []      # [{node, type, lane, resolved}]
 var coin_nodes: Array = []     # [{node, lane, taken}]
@@ -122,6 +131,7 @@ func _ready() -> void:
 	_build_ground()
 	_build_player()
 	_build_streetlights()
+	_build_storm()
 	_build_weather_particles()
 	_build_audio()
 	_build_ui()
@@ -135,6 +145,11 @@ func _run_shots() -> void:
 	var d := DirAccess.open("res://")
 	if d != null and not d.dir_exists("shots"):
 		d.make_dir("shots")
+	# Force dramatic weather so the harness can verify storm/tornado visuals.
+	if "--tornado" in OS.get_cmdline_args():
+		for w in weathers:
+			if w["name"] == "Tornado":
+				wA = w; wB = w; w_blend = 1.0; w_transition = false; _apply_weather()
 	await get_tree().create_timer(1.0).timeout
 	for i in range(8):
 		await get_tree().create_timer(0.8).timeout
@@ -237,7 +252,9 @@ func _prism(size: Vector3, col: Color, parent: Node3D, pos := Vector3.ZERO) -> M
 	return mi
 
 func _load_assets() -> void:
-	runner_scene = load("res://assets/char/runner.glb")
+	runner_scene = load("res://assets/char/jogging.fbx")
+	if runner_scene == null:
+		runner_scene = load("res://assets/char/runner.glb")
 	for n in ["sedan", "suv", "taxi", "van", "police", "hatchback-sports"]:
 		var s = load("res://assets/car/car-%s.glb" % n)
 		if s != null:
@@ -293,6 +310,8 @@ func _build_audio() -> void:
 	sfx_jump = _audio("res://assets/sfx/jump.ogg", -9.0)
 	sfx_slide = _audio("res://assets/sfx/slide.ogg", -9.0)
 	sfx_crash = _audio("res://assets/sfx/crash.ogg", -1.0)
+	sfx_thunder = _audio("res://assets/sfx/crash.ogg", -1.0)
+	sfx_thunder.pitch_scale = 0.45   # lower/longer -> thunder rumble
 
 func _play(p: AudioStreamPlayer) -> void:
 	if p != null and p.stream != null:
@@ -333,6 +352,64 @@ func _update_props(dt: float) -> void:
 					s["node"].rotation_degrees = Vector3(0, 0.0 if side < 0 else 180.0, 0)
 					break
 
+func _build_storm() -> void:
+	# Lightning bolt streak (hidden until a strike).
+	bolt = Node3D.new()
+	add_child(bolt)
+	var seg := _box(Vector3(0.5, 60, 0.5), Color(0.9, 0.95, 1.0), bolt, Vector3(0, 30, 0))
+	var bm := _flat(Color(0.9, 0.95, 1.0))
+	bm.emission_enabled = true
+	bm.emission = Color(0.85, 0.92, 1.0)
+	bm.emission_energy_multiplier = 8.0
+	seg.material_override = bm
+	bolt.visible = false
+
+	# Tornado funnel: stacked tapering cylinders (wider at the top).
+	tornado = Node3D.new()
+	add_child(tornado)
+	var y := 0.0
+	var r := 0.6
+	for i in 12:
+		var shade := 0.22 - i * 0.008
+		_cyl(r, 2.6, Color(shade, shade - 0.02, shade - 0.06), tornado, Vector3(0, y + 1.3, 0))
+		y += 2.4
+		r += 0.6
+	tornado.visible = false
+
+func _wfac(n: String) -> float:
+	var a: float = (1.0 - w_blend) if wA["name"] == n else 0.0
+	var b: float = w_blend if wB["name"] == n else 0.0
+	return a + b
+
+func _update_storm(dt: float) -> void:
+	var storm_f := _wfac("Thunderstorm")
+	var tor_f := _wfac("Tornado")
+	var active := storm_f > 0.2 or tor_f > 0.2
+
+	if active:
+		lightning_timer -= dt
+		if lightning_timer <= 0.0:
+			lightning_timer = randf_range(2.2, 6.0)
+			lightning_flash = 1.0
+			_play(sfx_thunder)
+			bolt.position = Vector3(randf_range(-20, 20), 0, -randf_range(40, 75))
+			bolt.rotation_degrees = Vector3(0, 0, randf_range(-12, 12))
+			bolt.visible = true
+			bolt_timer = 0.14
+	if bolt_timer > 0.0:
+		bolt_timer -= dt
+		if bolt_timer <= 0.0:
+			bolt.visible = false
+	lightning_flash = max(0.0, lightning_flash - dt * 3.0)
+	if flash_rect != null:
+		flash_rect.color.a = lightning_flash * 0.6
+
+	tornado.visible = tor_f > 0.05
+	if tornado.visible:
+		tornado.rotation.y += dt * 6.0
+		tornado.scale = Vector3(tor_f, 1.0, tor_f)
+		tornado.position = Vector3(-15 + sin(ui_time * 0.4) * 5.0, 0, -52)
+
 func _build_environment() -> void:
 	var we := WorldEnvironment.new()
 	env = Environment.new()
@@ -366,11 +443,11 @@ func _build_environment() -> void:
 
 func _build_camera() -> void:
 	cam = Camera3D.new()
-	cam.fov = 66.0
-	cam.position = Vector3(0, 4.1, 6.9)
-	# Higher vantage that looks further down the street so you can read the
-	# next obstacle in advance.
-	cam.look_at_from_position(cam.position, Vector3(0, 1.0, -24), Vector3.UP)
+	cam.fov = 74.0
+	cam.position = Vector3(0, 4.4, 7.8)
+	# Wide, high vantage looking far down the street: open, not claustrophobic,
+	# and you can read the next obstacle well in advance.
+	cam.look_at_from_position(cam.position, Vector3(0, 1.0, -28), Vector3.UP)
 	add_child(cam)
 
 func _build_ground() -> void:
@@ -424,16 +501,15 @@ func _make_building() -> Node3D:
 		_box(Vector3(4, 14, 4), Color(0.42, 0.45, 0.5), b, Vector3(0, 7, 0))
 	else:
 		var scene: PackedScene = building_scenes[randi() % building_scenes.size()]
-		_add_model(scene, b, randf_range(7.0, 13.0), "y", true)
+		_add_model(scene, b, randf_range(6.0, 10.0), "y", true)
 	return b
 
 func _build_player() -> void:
 	player = Node3D.new()
 	add_child(player)
 
-	# Animated CC0 character (Kenney), recoloured into an original red-hoodie
-	# runner (running on foot — no skateboard).
-	runner_model = _add_model(runner_scene, player, 1.7, "y", true)
+	# Player character (Mixamo jogging FBX), running on foot.
+	runner_model = _add_model(runner_scene, player, 1.45, "y", true)
 	runner_model.rotation_degrees = Vector3(0, 180, 0)   # face away from the camera
 
 	var jacket := _flat(Color(0.86, 0.16, 0.16))
@@ -457,14 +533,22 @@ func _build_player() -> void:
 	var ap := runner_model.find_child("AnimationPlayer", true, false)
 	if ap != null:
 		runner_anim = ap as AnimationPlayer
+		var list := runner_anim.get_animation_list()
 		var chosen := ""
-		for a in runner_anim.get_animation_list():
+		# Prefer a real locomotion clip (Mixamo names its clip "mixamo_com").
+		for a in list:
 			var an := String(a).to_lower()
-			if an.ends_with("sprint") or an.ends_with("run"):
+			if an.contains("jog") or an.contains("run") or an.contains("sprint") or an.contains("mixamo"):
 				chosen = a
 				break
-			if chosen == "" and an.ends_with("walk"):
-				chosen = a
+		# Otherwise take any clip that isn't the FBX's empty default "Take 001".
+		if chosen == "":
+			for a in list:
+				if String(a).to_lower() != "take 001":
+					chosen = a
+					break
+		if chosen == "" and list.size() > 0:
+			chosen = list[0]
 		if chosen != "":
 			runner_anim.get_animation(chosen).loop_mode = Animation.LOOP_LINEAR
 			runner_anim.play(chosen)
@@ -512,6 +596,12 @@ func _build_weathers() -> void:
 		{"name": "Fog", "top": Color(0.59,0.6,0.62), "hor": Color(0.8,0.81,0.82),
 		 "sun": Color(0.85,0.85,0.85), "sun_e": 0.6, "amb": 0.7, "night": 0.15,
 		 "fog": 0.013, "fog_c": Color(0.8,0.81,0.82), "precip": 0},
+		{"name": "Thunderstorm", "top": Color(0.1,0.11,0.14), "hor": Color(0.2,0.22,0.26),
+		 "sun": Color(0.6,0.64,0.72), "sun_e": 0.3, "amb": 0.35, "night": 0.7,
+		 "fog": 0.016, "fog_c": Color(0.2,0.22,0.27), "precip": 1},
+		{"name": "Tornado", "top": Color(0.16,0.15,0.1), "hor": Color(0.32,0.3,0.2),
+		 "sun": Color(0.7,0.68,0.5), "sun_e": 0.4, "amb": 0.45, "night": 0.55,
+		 "fog": 0.02, "fog_c": Color(0.32,0.3,0.22), "precip": 1},
 	]
 
 func _randomize_weather() -> void:
@@ -601,6 +691,7 @@ func _process(dt: float) -> void:
 	_scroll_dashes(dt)
 	_update_buildings(dt)
 	_update_props(dt)
+	_update_storm(dt)
 	_animate_player(dt)
 	_light_windows()
 
@@ -845,8 +936,8 @@ func _update_buildings(dt: float) -> void:
 			var slot = _free_building()
 			if slot != null:
 				slot["active"] = true
-				# Far to the side so buildings line the street without occluding it.
-				var off := randf_range(8.5, 13.0)
+				# Well clear of the road so houses never crowd or touch it.
+				var off := randf_range(14.0, 20.0)
 				slot["node"].position = Vector3(side * (LANE_X + off), 0, SPAWN_Z - randf_range(0, 6))
 				slot["node"].rotation_degrees = Vector3(0, 90.0 if side < 0 else -90.0, 0)
 
@@ -975,6 +1066,12 @@ func _make_label(size: int, col := Color.WHITE) -> Label:
 func _build_ui() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
+	# Full-screen white overlay for lightning flashes (behind the text).
+	flash_rect = ColorRect.new()
+	flash_rect.color = Color(1, 1, 1, 0)
+	flash_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	flash_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(flash_rect)
 	ui_score = _make_label(48); ui_score.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; layer.add_child(ui_score)
 	ui_coins = _make_label(48, Color(1, 0.84, 0.3)); ui_coins.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT; layer.add_child(ui_coins)
 	ui_info = _make_label(32, Color(0.9, 0.9, 0.9)); ui_info.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT; layer.add_child(ui_info)
