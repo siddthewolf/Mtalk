@@ -66,6 +66,7 @@ var board: Node3D
 var runner_scene: PackedScene
 var runner_model: Node3D
 var runner_anim: AnimationPlayer
+var jog_clip := ""
 var car_scenes: Array = []
 var building_scenes: Array = []
 var streetlights: Array = []
@@ -726,6 +727,9 @@ func _build_player() -> void:
 						and String(anim.track_get_path(ti)).to_lower().contains("hips"):
 					runner_anim.root_motion_track = anim.track_get_path(ti)
 					break
+			jog_clip = chosen
+			# Graft the baked Flying clip (same rig) for jetpack mode.
+			_add_flying_clip()
 			runner_anim.play(chosen)
 
 	# Shield bubble (shown only while a shield power-up is active).
@@ -760,6 +764,22 @@ func _build_player() -> void:
 	gun_model.visible = false
 
 	player.position = Vector3(p_x, 0, 0)
+
+func _add_flying_clip() -> void:
+	# Add the baked flying clip (same Mixamo rig) to the runner's player so we
+	# can switch to it during jetpack. Tiny .res instead of a redundant mesh FBX.
+	if runner_anim == null:
+		return
+	var anim := load("res://assets/char/flying_anim.res") as Animation
+	if anim == null:
+		return
+	anim = anim.duplicate()
+	anim.loop_mode = Animation.LOOP_LINEAR
+	var lib := runner_anim.get_animation_library("")
+	if lib == null:
+		lib = AnimationLibrary.new()
+		runner_anim.add_animation_library("", lib)
+	lib.add_animation("flying", anim)
 
 func _build_weather_particles() -> void:
 	rain_root = Node3D.new(); cam.add_child(rain_root)
@@ -1063,21 +1083,22 @@ func _spawn_row() -> void:
 			_add_obstacle(randi() % 2, "OVERHANG")
 	else:
 		_add_obstacle(randi() % 2, "CAR")
-	# coin in a lane with no car
-	var blocked := {}
+	# Lanes occupied by ANY obstacle this row.
+	var occ := {}
 	for o in obstacles:
-		if o["node"].position.z == SPAWN_Z and o["type"] == "CAR":
-			blocked[o["lane"]] = true
-	var free := []
+		if o["node"].position.z == SPAWN_Z:
+			occ[o["lane"]] = true
+	var clear := []
 	for l in [0, 1]:
-		if not blocked.has(l):
-			free.append(l)
-	if free.size() > 0:
-		var lane: int = free[randi() % free.size()]
-		if randf() < 0.13:
-			_add_powerup(lane, ["shield", "magnet", "mult", "jet", "tank", "gun"][randi() % 6])
-		elif randf() < 0.85:
-			_add_coin(lane)
+		if not occ.has(l):
+			clear.append(l)
+	# Power-ups spawn ONLY in a fully clear lane so you never crash to grab one.
+	if clear.size() > 0 and randf() < 0.14:
+		_add_powerup(clear[randi() % clear.size()], ["shield", "magnet", "mult", "jet", "tank", "gun"][randi() % 6])
+	elif randf() < 0.85:
+		# Coins prefer a clear lane (can sit above a barrier you jump to grab).
+		var cl: Array = clear if clear.size() > 0 else [0, 1]
+		_add_coin(cl[randi() % cl.size()])
 
 func _advance(dt: float) -> void:
 	var move := _ws() * dt
@@ -1210,7 +1231,12 @@ func _animate_player(dt: float) -> void:
 	player.rotation.z = -lean
 	_update_camera(dt)
 	if runner_anim != null:
-		runner_anim.speed_scale = clamp(_ws() / 11.0, 0.7, 2.6)
+		# Swap to the flying clip during jetpack, otherwise jog.
+		if runner_anim.has_animation("flying"):
+			var want: String = "flying" if jet_t > 0.0 else jog_clip
+			if want != "" and runner_anim.current_animation != want:
+				runner_anim.play(want)
+		runner_anim.speed_scale = 1.0 if jet_t > 0.0 else clamp(_ws() / 11.0, 0.7, 2.6)
 	var in_tank := tank_t > 0.0
 	if runner_model != null:
 		runner_model.visible = not in_tank
