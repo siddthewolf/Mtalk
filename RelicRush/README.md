@@ -13,13 +13,23 @@ is 100% original work that you can publish and monetize.
 
 ## Gameplay
 
-- Auto-runs forward; the world rushes toward the camera (pseudo-3D projection).
-- **Swipe left / right** — switch lanes
-- **Swipe up** (or tap) — jump over orange **barriers**
+- A skater auto-rolls forward; the world rushes toward the camera (pseudo-3D).
+- **Drag your thumb left / right** — the board follows to that lane (cursor-style
+  steering); a quick **swipe left / right** also hops one lane.
+- **Swipe up** (or tap) — jump over striped **barriers**
 - **Swipe down** — slide under stone **overhangs**
-- Tall purple **blocks** can't be jumped or slid — dodge to another lane
-- Collect gold **relics** for bonus points
-- Speed ramps up the longer you survive; high score is saved locally
+- Tall **blocks** can't be jumped or slid — change lanes to dodge
+- Collect glowing **relics** for bonus points
+- Speed starts slow and ramps up gradually; high score is saved locally
+- The game opens with an **auto-playing demo** that demonstrates each move —
+  tap any time to start your own run
+- A 10-second in-game guide reinforces the controls on your first run
+
+## Atmosphere
+
+The world cycles through randomized environments while you play — clear day,
+sunset, night (with stars and a moon), dawn, **rain**, **snow**, and **fog** —
+cross-fading every ~20–30 seconds. Each run starts on a random one.
 
 ## Project layout
 

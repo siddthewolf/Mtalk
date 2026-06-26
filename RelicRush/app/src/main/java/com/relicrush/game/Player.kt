@@ -11,7 +11,7 @@ import kotlin.math.roundToInt
 class Player {
 
     companion object {
-        const val LANE_SLIDE_SPEED = 11f      // how fast we lerp between lanes
+        const val LANE_SLIDE_SPEED = 14f      // how fast we lerp between lanes (snappy, cursor-like)
         const val JUMP_VELOCITY = 2.7f        // initial upward speed (world units/s)
         const val GRAVITY = -7.4f             // downward accel (world units/s^2)
         const val JUMP_CLEAR_HEIGHT = 0.16f   // height above which barriers are cleared

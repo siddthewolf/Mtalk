@@ -1,7 +1,7 @@
 package com.relicrush.game
 
 /** High-level screens the game can be in. */
-enum class GameState { READY, PLAYING, GAME_OVER }
+enum class GameState { DEMO, READY, PLAYING, GAME_OVER }
 
 /** What kind of hazard a lane object is, and therefore how you survive it. */
 enum class ObstacleType {
