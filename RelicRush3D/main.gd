@@ -22,6 +22,7 @@ const JUMP_CLEAR := 0.6
 const SLIDE_TIME := 0.7
 const WEATHER_FADE := 5.0
 const COIN_VALUE := 10
+const POWERUP_TIME := 10.0
 const SAVE_PATH := "user://relicrush.save"
 
 enum St { DEMO, PLAYING, OVER }
@@ -88,10 +89,26 @@ var flash_rect: ColorRect
 var obstacles: Array = []      # [{node, type, lane, resolved}]
 var coin_nodes: Array = []     # [{node, lane, taken}]
 var powerups: Array = []       # [{node, lane, type, taken}]
-var shield_active := false
+var shield_t := 0.0
 var magnet_t := 0.0
 var mult_t := 0.0
+var slow_t := 0.0
+var jet_t := 0.0
 var shield_bubble: Node3D
+
+# Biomes / scenery
+var biomes: Array = []
+var biome_idx := 0
+var biome_timer := 32.0
+var surround_mi: MeshInstance3D
+var tree_scenes: Array = []
+var palm_scenes: Array = []
+var desert_scenes: Array = []
+var water_plane: Node3D
+var debris: Array = []          # tornado flying debris [{node, vel, spin}]
+var debris_timer := 0.0
+var sand_root: Node3D
+var sand_bits: Array = []
 var dashes: Array = []
 var buildings: Array = []
 var build_timer := 0.0
@@ -138,6 +155,7 @@ func _ready() -> void:
 	_build_player()
 	_build_streetlights()
 	_build_storm()
+	_build_effects()
 	_build_weather_particles()
 	_build_audio()
 	_build_ui()
@@ -156,6 +174,11 @@ func _run_shots() -> void:
 		for w in weathers:
 			if w["name"] == "Tornado":
 				wA = w; wB = w; w_blend = 1.0; w_transition = false; _apply_weather()
+	for arg in ["--forest", "--beach", "--desert"]:
+		if arg in OS.get_cmdline_args():
+			biome_idx = ["--forest", "--beach", "--desert"].find(arg) + 1
+			biome_timer = 999.0
+			_apply_biome()
 	await get_tree().create_timer(1.0).timeout
 	for i in range(8):
 		await get_tree().create_timer(0.8).timeout
@@ -269,6 +292,24 @@ func _load_assets() -> void:
 		var s = load("res://assets/city/building-%s.glb" % c)
 		if s != null:
 			building_scenes.append(s)
+	for n in ["tree_default", "tree_pineDefaultA"]:
+		var s = load("res://assets/nature/%s.glb" % n)
+		if s != null: tree_scenes.append(s)
+	for n in ["tree_palm", "tree_palmShort"]:
+		var s = load("res://assets/nature/%s.glb" % n)
+		if s != null: palm_scenes.append(s)
+	for n in ["cactus_tall", "cactus_short", "rock_largeA", "rock_tallE"]:
+		var s = load("res://assets/nature/%s.glb" % n)
+		if s != null: desert_scenes.append(s)
+	_build_biomes()
+
+func _build_biomes() -> void:
+	biomes = [
+		{"name": "City", "props": building_scenes, "ground": "concrete", "h": Vector2(6, 10), "off": Vector2(13, 20)},
+		{"name": "Forest", "props": tree_scenes, "ground": "grass", "h": Vector2(5, 9), "off": Vector2(4, 10)},
+		{"name": "Beach", "props": palm_scenes, "ground": "sand", "h": Vector2(5, 8), "off": Vector2(4, 9)},
+		{"name": "Desert", "props": desert_scenes, "ground": "sand", "h": Vector2(3, 6), "off": Vector2(5, 12)},
+	]
 
 ## Combined AABB of every VisualInstance3D under [root], expressed in [ref] space.
 func _merged_aabb(ref: Node3D, root: Node3D) -> AABB:
@@ -416,6 +457,87 @@ func _update_storm(dt: float) -> void:
 		tornado.scale = Vector3(tor_f, 1.0, tor_f)
 		tornado.position = Vector3(-15 + sin(ui_time * 0.4) * 5.0, 0, -52)
 
+func _build_effects() -> void:
+	# Beach tide: a translucent water sheet that washes over the road and back.
+	water_plane = Node3D.new()
+	add_child(water_plane)
+	var wp := MeshInstance3D.new()
+	var pm := PlaneMesh.new()
+	pm.size = Vector2(24, 260)
+	wp.mesh = pm
+	var wm := StandardMaterial3D.new()
+	wm.albedo_color = Color(0.2, 0.5, 0.78, 0.55)
+	wm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	wm.metallic = 0.3
+	wm.roughness = 0.08
+	wm.emission_enabled = true
+	wm.emission = Color(0.12, 0.3, 0.5)
+	wm.emission_energy_multiplier = 0.25
+	wp.material_override = wm
+	wp.position = Vector3(-18, 0.06, -90)
+	water_plane.add_child(wp)
+	water_plane.visible = false
+
+	# Tornado flying "trees" (trunk + foliage) tumbling across the road.
+	for i in 12:
+		var dn := Node3D.new()
+		add_child(dn)
+		_box(Vector3(0.3, 1.1, 0.3), Color(0.4, 0.28, 0.15), dn, Vector3(0, 0.55, 0))
+		_box(Vector3(1.1, 1.1, 1.1), Color(0.2, 0.5, 0.2), dn, Vector3(0, 1.4, 0))
+		dn.visible = false
+		debris.append({"node": dn, "vel": Vector3.ZERO, "spin": Vector3.ZERO})
+
+	# Desert blowing sand (horizontal streaks in front of the camera).
+	sand_root = Node3D.new()
+	cam.add_child(sand_root)
+	for i in 80:
+		var s := _box(Vector3(0.18, 0.04, 0.04), Color(0.85, 0.72, 0.45, 1), sand_root)
+		s.position = Vector3(randf_range(-9, 9), randf_range(-3, 4), -randf_range(3, 12))
+		sand_bits.append(s)
+	sand_root.visible = false
+
+func _update_biome(dt: float) -> void:
+	biome_timer -= dt
+	if biome_timer <= 0.0:
+		biome_timer = randf_range(28, 42)
+		biome_idx = (biome_idx + 1) % biomes.size()
+		_apply_biome()
+
+func _update_effects(dt: float) -> void:
+	# Beach tide washes in and out over the road.
+	if water_plane != null and water_plane.visible:
+		var wp := water_plane.get_child(0) as MeshInstance3D
+		wp.position.x = -20.0 + (sin(ui_time * 0.5) * 0.5 + 0.5) * 22.0
+	# Tornado flying trees.
+	var tor := _wfac("Tornado")
+	if tor > 0.3:
+		debris_timer -= dt
+		if debris_timer <= 0.0:
+			debris_timer = randf_range(0.4, 1.1)
+			for d in debris:
+				if not d["node"].visible:
+					var sidez := -1.0 if randf() < 0.5 else 1.0
+					d["node"].visible = true
+					d["node"].position = Vector3(sidez * 14.0, randf_range(1, 5), SPAWN_Z * 0.55)
+					d["vel"] = Vector3(-sidez * randf_range(6, 12), randf_range(2, 5), randf_range(9, 17))
+					d["spin"] = Vector3(randf_range(-4, 4), randf_range(-4, 4), randf_range(-4, 4))
+					break
+	for d in debris:
+		if d["node"].visible:
+			d["node"].position += d["vel"] * dt
+			d["vel"].y -= 7.0 * dt
+			d["node"].rotation += d["spin"] * dt
+			if d["node"].position.z > CULL_Z or d["node"].position.y < -3.0:
+				d["node"].visible = false
+	# Desert blowing sand.
+	var desert: bool = biomes[biome_idx]["name"] == "Desert"
+	sand_root.visible = desert or tor > 0.3
+	if sand_root.visible:
+		for s in sand_bits:
+			s.position.x -= (11.0 + speed) * dt
+			if s.position.x < -10.0:
+				s.position = Vector3(10.0, randf_range(-3, 4), -randf_range(3, 12))
+
 func _build_environment() -> void:
 	var we := WorldEnvironment.new()
 	env = Environment.new()
@@ -457,14 +579,14 @@ func _build_camera() -> void:
 	add_child(cam)
 
 func _build_ground() -> void:
-	# Wide surrounding ground (sidewalks / lots).
-	var surround := MeshInstance3D.new()
+	# Wide surrounding ground (swapped per biome).
+	surround_mi = MeshInstance3D.new()
 	var pm := PlaneMesh.new()
 	pm.size = Vector2(80, 260)
-	surround.mesh = pm
-	surround.material_override = _pbr_mat("concrete", Vector2(20, 90))
-	surround.position = Vector3(0, -0.02, -90)
-	add_child(surround)
+	surround_mi.mesh = pm
+	surround_mi.material_override = _pbr_mat("concrete", Vector2(20, 90))
+	surround_mi.position = Vector3(0, -0.02, -90)
+	add_child(surround_mi)
 
 	# Asphalt road with a realistic PBR material.
 	var road := MeshInstance3D.new()
@@ -494,21 +616,31 @@ func _build_ground() -> void:
 		d.position = Vector3(0, 0.02, SPAWN_Z + i * (GAP_Z * 0.0 + 4.0))
 		dashes.append(d)
 
-	# Pre-create a pool of side buildings (recycled).
+	# Pool of side-prop containers (filled with the current biome's prop on spawn).
 	for i in 16:
-		var node := _make_building()
-		node.position = Vector3(0, 0, 200)  # parked off-screen until spawned
+		var node := Node3D.new()
+		add_child(node)
+		node.position = Vector3(0, 0, 200)
 		buildings.append({"node": node, "active": false})
 
-func _make_building() -> Node3D:
-	var b := Node3D.new()
-	add_child(b)
-	if building_scenes.is_empty():
-		_box(Vector3(4, 14, 4), Color(0.42, 0.45, 0.5), b, Vector3(0, 7, 0))
-	else:
-		var scene: PackedScene = building_scenes[randi() % building_scenes.size()]
-		_add_model(scene, b, randf_range(6.0, 10.0), "y", true)
-	return b
+func _populate_prop(node: Node3D) -> void:
+	# Fill a side-prop container with a model from the current biome.
+	for c in node.get_children():
+		c.queue_free()
+	var b: Dictionary = biomes[biome_idx]
+	var props: Array = b["props"]
+	var h: Vector2 = b["h"]
+	if props.is_empty():
+		_box(Vector3(4, 8, 4), Color(0.42, 0.45, 0.5), node, Vector3(0, 4, 0))
+		return
+	var scene: PackedScene = props[randi() % props.size()]
+	_add_model(scene, node, randf_range(h.x, h.y), "y", true)
+
+func _apply_biome() -> void:
+	if surround_mi != null:
+		surround_mi.material_override = _pbr_mat(biomes[biome_idx]["ground"], Vector2(20, 90))
+	if water_plane != null:
+		water_plane.visible = biomes[biome_idx]["name"] == "Beach"
 
 func _build_player() -> void:
 	player = Node3D.new()
@@ -673,8 +805,8 @@ func _apply_weather() -> void:
 	wdiff = lerp(float(wA.get("diff", 1.0)), float(wB.get("diff", 1.0)), t)
 
 func _ws() -> float:
-	# Effective world speed: base speed scaled by the current weather difficulty.
-	return speed * wdiff
+	# Effective world speed: base speed scaled by weather difficulty and slow-mo.
+	return speed * wdiff * (0.5 if slow_t > 0.0 else 1.0)
 
 func _night_factor() -> float:
 	return _lf(wA["night"], wB["night"])
@@ -720,6 +852,8 @@ func _process(dt: float) -> void:
 	_update_buildings(dt)
 	_update_props(dt)
 	_update_storm(dt)
+	_update_biome(dt)
+	_update_effects(dt)
 	_animate_player(dt)
 	_light_windows()
 
@@ -737,8 +871,11 @@ func _process(dt: float) -> void:
 func _update_playing(dt: float) -> void:
 	game_time += dt
 	speed = clamp(speed + ACCEL * dt, START_SPEED, MAX_SPEED)
+	if shield_t > 0.0: shield_t = max(0.0, shield_t - dt)
 	if magnet_t > 0.0: magnet_t = max(0.0, magnet_t - dt)
 	if mult_t > 0.0: mult_t = max(0.0, mult_t - dt)
+	if slow_t > 0.0: slow_t = max(0.0, slow_t - dt)
+	if jet_t > 0.0: jet_t = max(0.0, jet_t - dt)
 	_step_player(dt)
 	dist_to_spawn -= _ws() * dt
 	if dist_to_spawn <= 0.0:
@@ -844,8 +981,11 @@ func _add_powerup(lane: int, type: String) -> void:
 	var n := Node3D.new()
 	add_child(n)
 	var col := Color(0.45, 0.72, 1.0)      # shield = blue
-	if type == "magnet": col = Color(1.0, 0.45, 0.2)   # magnet = orange
-	elif type == "mult": col = Color(0.45, 1.0, 0.4)   # 2x = green
+	match type:
+		"magnet": col = Color(1.0, 0.45, 0.2)  # orange
+		"mult": col = Color(0.45, 1.0, 0.4)    # green
+		"slow": col = Color(0.7, 0.4, 1.0)     # purple
+		"jet": col = Color(1.0, 0.9, 0.2)      # yellow
 	var core := _sph(0.42, col, n, Vector3.ZERO)
 	core.material_override = _mat(col, 1.4)
 	var ring := _cyl(0.6, 0.08, col, n, Vector3.ZERO)
@@ -879,8 +1019,8 @@ func _spawn_row() -> void:
 			free.append(l)
 	if free.size() > 0:
 		var lane: int = free[randi() % free.size()]
-		if randf() < 0.11:
-			_add_powerup(lane, ["shield", "magnet", "mult"][randi() % 3])
+		if randf() < 0.12:
+			_add_powerup(lane, ["shield", "magnet", "mult", "slow", "jet"][randi() % 5])
 		elif randf() < 0.85:
 			_add_coin(lane)
 
@@ -891,10 +1031,8 @@ func _advance(dt: float) -> void:
 		if not o["resolved"] and o["node"].position.z >= 0.0:
 			o["resolved"] = true
 			if state == St.PLAYING and int(o["lane"]) == _round_lane() and not _survives(o):
-				if shield_active:
-					shield_active = false      # shield absorbs one hit
-					crash_flash = 0.5
-					_play(sfx_crash)
+				if shield_t > 0.0 or jet_t > 0.0:
+					crash_flash = 0.4          # shield / jetpack shrugs it off
 				else:
 					_game_over()
 	for c in coin_nodes:
@@ -903,7 +1041,7 @@ func _advance(dt: float) -> void:
 		# Magnet pulls coins toward the player's lane.
 		if magnet_t > 0.0 and c["node"].position.z > -25.0:
 			c["node"].position.x = lerp(c["node"].position.x, p_x, clamp(dt * 4.0, 0.0, 1.0))
-		var grab: bool = int(c["lane"]) == _round_lane() or magnet_t > 0.0
+		var grab: bool = int(c["lane"]) == _round_lane() or magnet_t > 0.0 or jet_t > 0.0
 		if not c["taken"] and c["node"].position.z >= 0.0 and grab:
 			c["taken"] = true
 			c["node"].visible = false
@@ -945,9 +1083,11 @@ func _advance(dt: float) -> void:
 func _activate_powerup(type: String) -> void:
 	_play(sfx_coin)
 	match type:
-		"shield": shield_active = true
-		"magnet": magnet_t = 7.0
-		"mult": mult_t = 8.0
+		"shield": shield_t = POWERUP_TIME
+		"magnet": magnet_t = POWERUP_TIME
+		"mult": mult_t = POWERUP_TIME
+		"slow": slow_t = POWERUP_TIME
+		"jet": jet_t = POWERUP_TIME
 
 func _survives(o: Dictionary) -> bool:
 	match o["type"]:
@@ -965,11 +1105,18 @@ func _survives(o: Dictionary) -> bool:
 func _step_player(dt: float) -> void:
 	var target_x := _lane_x(p_lane)
 	p_x = lerp(p_x, target_x, clamp(dt * 12.0, 0.0, 1.0))
-	if jumping:
-		p_y += p_vy * dt
-		p_vy += GRAVITY * dt
-		if p_y <= 0.0:
-			p_y = 0.0; p_vy = 0.0; jumping = false
+	if jet_t > 0.0:
+		# Jetpack: float above the obstacles.
+		jumping = false; sliding = false
+		p_y = lerp(p_y, 3.2, clamp(dt * 4.0, 0.0, 1.0))
+	else:
+		if jumping:
+			p_y += p_vy * dt
+			p_vy += GRAVITY * dt
+			if p_y <= 0.0:
+				p_y = 0.0; p_vy = 0.0; jumping = false
+		elif p_y > 0.0:
+			p_y = lerp(p_y, 0.0, clamp(dt * 6.0, 0.0, 1.0))  # settle after jetpack ends
 	if sliding:
 		slide_t -= dt
 		if slide_t <= 0.0:
@@ -989,8 +1136,8 @@ func _animate_player(dt: float) -> void:
 		var target_sy: float = 0.5 if sliding else 1.0
 		runner_model.scale.y = lerp(runner_model.scale.y, target_sy, clamp(dt * 14.0, 0.0, 1.0))
 	if shield_bubble != null:
-		shield_bubble.visible = shield_active
-		if shield_active:
+		shield_bubble.visible = shield_t > 0.0 or jet_t > 0.0
+		if shield_bubble.visible:
 			shield_bubble.rotation.y += dt * 2.0
 
 
@@ -1019,10 +1166,11 @@ func _update_buildings(dt: float) -> void:
 			var slot = _free_building()
 			if slot != null:
 				slot["active"] = true
-				# Well clear of the road so houses never crowd or touch it.
-				var off := randf_range(14.0, 20.0)
+				_populate_prop(slot["node"])
+				var orange: Vector2 = biomes[biome_idx]["off"]
+				var off := randf_range(orange.x, orange.y)
 				slot["node"].position = Vector3(side * (LANE_X + off), 0, SPAWN_Z - randf_range(0, 6))
-				slot["node"].rotation_degrees = Vector3(0, 90.0 if side < 0 else -90.0, 0)
+				slot["node"].rotation_degrees = Vector3(0, randf_range(0, 360), 0)
 
 func _free_building():
 	for b in buildings:
@@ -1057,7 +1205,7 @@ func _start_game() -> void:
 	obstacles.clear()
 	coin_nodes.clear()
 	powerups.clear()
-	shield_active = false; magnet_t = 0.0; mult_t = 0.0
+	shield_t = 0.0; magnet_t = 0.0; mult_t = 0.0; slow_t = 0.0; jet_t = 0.0
 	p_lane = 0; p_x = -LANE_X; p_y = 0.0; p_vy = 0.0
 	jumping = false; sliding = false
 	speed = START_SPEED
@@ -1185,7 +1333,7 @@ func _refresh_ui() -> void:
 		St.DEMO:
 			ui_score.text = ""
 			ui_coins.text = ""
-			ui_info.text = "Best %d  •  %s" % [high, _weather_name()]
+			ui_info.text = "Best %d  •  %s  •  %s" % [high, _weather_name(), biomes[biome_idx]["name"]]
 			ui_caption.text = "▶ DEMO   —   %s" % demo_caption
 			ui_tut.text = ""
 			ui_center.text = "RELIC RUSH"
@@ -1193,7 +1341,7 @@ func _refresh_ui() -> void:
 		St.PLAYING:
 			ui_score.text = "Score  %d" % score
 			ui_coins.text = "● %d" % coins
-			ui_info.text = "Best %d  •  %s" % [high, _weather_name()]
+			ui_info.text = "Best %d  •  %s  •  %s" % [high, _weather_name(), biomes[biome_idx]["name"]]
 			ui_center.text = ""
 			ui_sub.text = ""
 			ui_caption.text = _powerup_text()
@@ -1220,12 +1368,11 @@ func _tutorial_text() -> String:
 
 func _powerup_text() -> String:
 	var t := ""
-	if shield_active:
-		t += "[ SHIELD ]  "
-	if magnet_t > 0.0:
-		t += "[ MAGNET %d ]  " % int(ceil(magnet_t))
-	if mult_t > 0.0:
-		t += "[ 2X %d ]" % int(ceil(mult_t))
+	if shield_t > 0.0: t += "[SHIELD %d]  " % int(ceil(shield_t))
+	if magnet_t > 0.0: t += "[MAGNET %d]  " % int(ceil(magnet_t))
+	if mult_t > 0.0: t += "[2X %d]  " % int(ceil(mult_t))
+	if slow_t > 0.0: t += "[SLOW %d]  " % int(ceil(slow_t))
+	if jet_t > 0.0: t += "[JETPACK %d]" % int(ceil(jet_t))
 	return t
 
 
