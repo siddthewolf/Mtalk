@@ -156,6 +156,22 @@ func _flat(col: Color) -> StandardMaterial3D:
 	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	return m
 
+func _pbr_mat(base: String, tile: Vector2, ao := false) -> StandardMaterial3D:
+	# Realistic CC0 material (ambientCG) with colour, roughness and optional AO.
+	var m := StandardMaterial3D.new()
+	m.albedo_texture = load("res://assets/pbr/%s_color.jpg" % base)
+	var r = load("res://assets/pbr/%s_rough.jpg" % base)
+	if r != null:
+		m.roughness_texture = r
+		m.roughness = 1.0
+	if ao:
+		var a = load("res://assets/pbr/%s_ao.jpg" % base)
+		if a != null:
+			m.ao_enabled = true
+			m.ao_texture = a
+	m.uv1_scale = Vector3(tile.x, tile.y, 1.0)
+	return m
+
 func _box(size: Vector3, col: Color, parent: Node3D, pos := Vector3.ZERO, emit := 0.0) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	var bm := BoxMesh.new()
@@ -300,16 +316,16 @@ func _build_ground() -> void:
 	var pm := PlaneMesh.new()
 	pm.size = Vector2(80, 260)
 	surround.mesh = pm
-	surround.material_override = _mat(Color(0.34, 0.36, 0.34))
+	surround.material_override = _pbr_mat("concrete", Vector2(20, 90))
 	surround.position = Vector3(0, -0.02, -90)
 	add_child(surround)
 
-	# Asphalt road.
+	# Asphalt road with a realistic PBR material.
 	var road := MeshInstance3D.new()
 	var rpm := PlaneMesh.new()
 	rpm.size = Vector2(LANE_X * 2.0 + 2.2, 260)
 	road.mesh = rpm
-	road.material_override = _mat(Color(0.13, 0.13, 0.15))
+	road.material_override = _pbr_mat("asphalt", Vector2(2, 90), true)
 	road.position = Vector3(0, 0.0, -90)
 	add_child(road)
 
