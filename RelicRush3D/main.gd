@@ -1041,10 +1041,8 @@ func _apply_weather() -> void:
 	sun.light_color = wA["sun"].lerp(wB["sun"], t)
 	sun.light_energy = _lf(wA["sun_e"], wB["sun_e"])
 	env.ambient_light_energy = _lf(wA["amb"], wB["amb"]) * lerp(1.0, 0.4, nf)
-	var fog: float = _lf(wA["fog"], wB["fog"])
-	env.fog_enabled = fog > 0.0005
-	env.fog_density = fog
-	env.fog_light_color = wA["fog_c"].lerp(wB["fog_c"], t)
+	# Fog disabled entirely — it muddied the view and hurt readability.
+	env.fog_enabled = false
 	wdiff = lerp(float(wA.get("diff", 1.0)), float(wB.get("diff", 1.0)), t)
 
 func _ws() -> float:
